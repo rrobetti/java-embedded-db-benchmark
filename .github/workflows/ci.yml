@@ -1,0 +1,97 @@
+name: Cross-platform correctness
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Bash syntax
+        shell: bash
+        run: bash -n scripts/setup.sh scripts/benchmark.sh
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          foreach ($file in @('scripts/setup.ps1', 'scripts/benchmark.ps1')) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; exit 1 }
+          }
+      - name: Package, real tests and all-engine connectivity (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/setup.sh
+      - name: Package, real tests and all-engine connectivity (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/setup.ps1
+      - name: Small measured suite (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          bash scripts/benchmark.sh --offline --profile smoke \
+            --databases h2,hsqldb,sqlite,pglite --workloads point \
+            --rows 100 --warmup 0 --duration 0.2 --iterations 1 --max-operations 100 \
+            --threads 1 --connections 1 --memory-budget 2048m --jvm-heap 768m \
+            --child-deadline 120 --output benchmark-results/ci
+      - name: Small measured suite (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/benchmark.ps1 --offline --profile smoke `
+            --databases h2,hsqldb,sqlite,pglite --workloads point `
+            --rows 100 --warmup 0 --duration 0.2 --iterations 1 --max-operations 100 `
+            --threads 1 --connections 1 --memory-budget 2048m --jvm-heap 768m `
+            --child-deadline 120 --output benchmark-results/ci
+      - name: Validate actual reports
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("benchmark-results/ci")
+          for extension in ("json", "csv", "md", "html"):
+              path = root / f"report.{extension}"
+              assert path.is_file() and path.stat().st_size > 0, path
+          report = json.loads((root / "report.json").read_text(encoding="utf-8"))
+          runs = report["results"]
+          assert len(runs) == 4, f"Expected four runs, got {len(runs)}"
+          assert {run["engine"] for run in runs} == {"h2", "hsqldb", "sqlite", "pglite"}
+          for run in runs:
+              assert run["status"] == "OK" and run["valid"] is True, run
+              assert run["datasetValid"] is True and run["workloadValid"] is True, run
+              measurement = run["measurement"]
+              assert measurement["successes"] > 0, run
+              assert measurement["failures"] == 0 and measurement["rejected"] == 0, run
+              artifacts = root / run["artifactDirectory"]
+              assert (artifacts / "result.json").is_file(), artifacts
+              assert any(artifacts.glob("latency-*.hgr")), artifacts
+          print("Validated four real, correct, nonempty benchmark results.")
+          PY
+      - name: Upload reports and test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark-${{ matrix.os }}
+          path: |
+            benchmark-results/ci/
+            target/surefire-reports/
+          if-no-files-found: error
+          retention-days: 14

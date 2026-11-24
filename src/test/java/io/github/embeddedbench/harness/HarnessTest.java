@@ -255,6 +255,37 @@ class HarnessTest {
         assertTrue(Files.isRegularFile(options.output.resolve("latency-read.hgr")));
     }
 
+    @Test void hsqldbSmallPayloadsFitInBoundedHeap() throws Exception {
+        Path directory = directory();
+        Path log = directory.resolve("child.log");
+        Process child = new ProcessBuilder(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-Xmx256m", "-XX:+ExitOnOutOfMemoryError",
+                "-cp", System.getProperty("java.class.path"), BenchmarkCli.class.getName(),
+                "--child", "--run-id", "hsqldb-bounded-heap", "--profile", "smoke",
+                "--engine", "hsqldb", "--scenario", "point", "--rows", "20000",
+                "--warmup", "0", "--duration", "0.2", "--max-operations", "1",
+                "--jvm-heap", "256m", "--output", directory.toString())
+                .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try {
+            assertTrue(child.waitFor(90, java.util.concurrent.TimeUnit.SECONDS), "Child timed out");
+            assertEquals(0, child.exitValue(), () -> {
+                try { return Files.readString(log); }
+                catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+            });
+            Map<?, ?> result = (Map<?, ?>) Json.decode(Files.readString(directory.resolve("result.json")));
+            assertEquals("OK", result.get("status"));
+            assertEquals(true, result.get("datasetValid"));
+            assertEquals(true, result.get("workloadValid"));
+            assertNotNull(((Map<?, ?>) result.get("stages")).get("delete"));
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+                child.waitFor();
+            }
+        }
+    }
+
     @Test void reportingEscapesHtmlAndCsv() {
         var result = new LinkedHashMap<String, Object>();
         result.put("runId", "\"<script>alert('x')</script>,\n");

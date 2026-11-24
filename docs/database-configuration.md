@@ -64,6 +64,13 @@ HSQLDB `default` and `mvcc` profiles explicitly set transaction control to
 MVCC; `--db-profile locks` compares the engine-default LOCKS model.
 Select only HSQLDB for these non-default options; other adapters reject
 unsupported profiles. Its in-memory schema uses MEMORY tables.
+Customer payloads use inline `VARBINARY(2147483647)`, not `BLOB`: HSQLDB's
+default LOB allocation reserves a 32 KiB block per nonempty small BLOB.
+At one million customers, 128-byte BLOB payloads alone would require about
+30.5 GiB of block storage. Inline storage preserves the bytes and JDBC
+`setBytes`/`getBytes` behavior without this allocation amplification.
+This is an engine-specific storage choice, not a BLOB performance test;
+do not combine results from the old BLOB schema with these results.
 H2/HSQLDB capabilities must not be treated as proof of cross-engine XA
 interoperability or recovery.
 Their adapter initialization probes real XA prepare/recover/commit/rollback

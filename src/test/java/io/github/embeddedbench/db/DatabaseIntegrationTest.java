@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -19,8 +20,9 @@ import static org.junit.jupiter.api.Assertions.*;
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
 class DatabaseIntegrationTest {
     @ParameterizedTest(name = "{0} / {1}")
-    @CsvSource({"h2,default", "hsqldb,default", "hsqldb,mvcc", "sqlite,default", "pglite,default"})
+    @CsvSource({"h2,default", "hsqldb,default", "hsqldb,mvcc", "hsqldb,locks", "sqlite,default", "pglite,default"})
     void realEngineRoundTripConstraintsTransactionsAndCapabilities(String id, String profile) throws Exception {
+        DatabaseAdapters.initializeDriver(id);
         try (DatabaseAdapter adapter = DatabaseAdapters.create(id, profile)) {
             assertThrows(SQLException.class, adapter::openConnection);
             adapter.initialize();
@@ -31,12 +33,16 @@ class DatabaseIntegrationTest {
                 assertTrue(probe.supported() && probe.prepare() && probe.recover() && probe.commit() && probe.rollback());
             }
             try (Connection connection = adapter.openConnection()) {
+                adapter.configureIsolation(connection, Connection.TRANSACTION_SERIALIZABLE);
+                assertEquals(Connection.TRANSACTION_SERIALIZABLE, connection.getTransactionIsolation());
                 adapter.createSchema(connection);
                 DeterministicDataset.load(connection, 37, 257, 987654321, 8);
                 DeterministicDataset.validate(connection, 37, 257, 987654321);
                 assertJoinAndCte(connection);
-                assertConstraints(connection);
-                assertRollbackAndSavepoint(connection, id);
+                if (!"pglite".equals(id)) {
+                    assertConstraints(connection);
+                }
+                assertRollbackAndSavepoint(connection);
                 assertCommittedUpdate(connection);
                 assertPrecision(connection, id);
                 if ("sqlite".equals(id)) {
@@ -68,6 +74,53 @@ class DatabaseIntegrationTest {
                 adapter.createSchema(connection);
                 DeterministicDataset.load(connection, 0, 0, 1, 1);
                 DeterministicDataset.validate(connection, 0, 0, 1);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"prepared", "individual"})
+    void actualNamedUrlUpstreamDriverSupportedIngestionIsKeptSeparateFromFramedRepair(String mode) throws Exception {
+        try (PgLiteDatabaseAdapter adapter = new PgLiteDatabaseAdapter("upstream")) {
+            assertEquals("jdbc:pglite:memory:benchmark", adapter.jdbcUrl());
+            adapter.initialize();
+            assertTrue(adapter.capabilities().limitations().startsWith("UNMODIFIED UPSTREAM"));
+            assertTrue(adapter.capabilities().limitations().contains("42.7.15"));
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                DeterministicDataset.load(connection, 100, 128, 42, 500, mode);
+                DeterministicDataset.validate(connection, 100, 128, 42);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "INSERT INTO customers SELECT id,name,'other@example.test',notes,payload FROM customers WHERE id=1",
+            "INSERT INTO products VALUES (1,'duplicate',1.00)",
+            "INSERT INTO accounts VALUES (900,999999,1.00)",
+            "INSERT INTO orders VALUES (900,999999,CURRENT_TIMESTAMP,'NEW')",
+            "INSERT INTO order_items VALUES (900,999999,1,1)",
+            "INSERT INTO order_items VALUES (900,1,999999,1)",
+            "INSERT INTO financial_transactions VALUES (900,999999,1.00,CURRENT_TIMESTAMP)",
+            "UPDATE customers SET email='customer-2@example.test' WHERE id=1",
+            "DELETE FROM customers WHERE id=1",
+            "DELETE FROM products WHERE id=1"})
+    void pgliteActuallyEnforcesConstraintsAndExposesUpstreamErrorCleanupLimitation(String sql) throws Exception {
+        // PGlite4j 0.0.3's WASM error cleanup leaves an active portal. Each
+        // constraint is independently tested against a fresh real instance.
+        try (DatabaseAdapter adapter = new PgLiteDatabaseAdapter()) {
+            adapter.initialize();
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                DeterministicDataset.load(connection, 4, 16, 42, 2, "prepared");
+                try (Statement statement = connection.createStatement()) {
+                    SQLException constraint = assertThrows(SQLException.class, () -> statement.executeUpdate(sql));
+                    assertNotNull(constraint.getSQLState());
+                    assertTrue(constraint.getSQLState().startsWith("23"), constraint.toString());
+                    SQLException cleanup = assertThrows(SQLException.class, () -> statement.executeQuery("SELECT 1"));
+                    assertTrue(cleanup.getMessage().contains("cannot drop active portal"), cleanup.toString());
+                }
             }
         }
     }
@@ -151,7 +204,7 @@ class DatabaseIntegrationTest {
 
     private static void assertConstraints(Connection connection) throws SQLException {
         String[] invalid = {
-                "INSERT INTO customers VALUES (1,'duplicate','new@example.test',NULL,NULL)",
+                "INSERT INTO customers SELECT id,name,'other@example.test',notes,payload FROM customers WHERE id=1",
                 "INSERT INTO products VALUES (1,'duplicate',1.00)",
                 "INSERT INTO accounts VALUES (900,999999,1.00)",
                 "INSERT INTO orders VALUES (900,999999,CURRENT_TIMESTAMP,'NEW')",
@@ -163,13 +216,17 @@ class DatabaseIntegrationTest {
                 "DELETE FROM products WHERE id=1"
         };
         for (String sql : invalid) {
+            connection.setAutoCommit(false);
             try (Statement statement = connection.createStatement()) {
                 assertThrows(SQLException.class, () -> statement.executeUpdate(sql), sql);
+            } finally {
+                connection.rollback();
+                connection.setAutoCommit(true);
             }
         }
     }
 
-    private static void assertRollbackAndSavepoint(Connection connection, String engine) throws SQLException {
+    private static void assertRollbackAndSavepoint(Connection connection) throws SQLException {
         BigDecimal initialPrice;
         try (Statement statement = connection.createStatement();
              ResultSet result = statement.executeQuery("SELECT price FROM products WHERE id=1")) {
@@ -185,21 +242,12 @@ class DatabaseIntegrationTest {
             statement.executeUpdate("UPDATE products SET price=price+0.01 WHERE id=1");
         }
         connection.rollback(savepoint);
-        if ("pglite".equals(engine)) {
-            try (Statement statement = connection.createStatement()) {
-                SQLException limitation = assertThrows(SQLException.class,
-                        () -> statement.executeQuery("SELECT price FROM products WHERE id=1"));
-                assertTrue(limitation.getMessage().contains("cannot drop active portal"),
-                        "PGlite 0.0.3 subtransaction rollback limitation must be reproduced, not fabricated");
-            }
-        } else {
-            try (Statement statement = connection.createStatement();
-                 ResultSet result = statement.executeQuery("SELECT price FROM products WHERE id=1")) {
-                assertTrue(result.next());
-                assertEquals(0, initialPrice.compareTo(result.getBigDecimal(1)));
-            }
-            connection.releaseSavepoint(connection.setSavepoint());
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("SELECT price FROM products WHERE id=1")) {
+            assertTrue(result.next());
+            assertEquals(0, initialPrice.compareTo(result.getBigDecimal(1)));
         }
+        connection.releaseSavepoint(connection.setSavepoint());
         connection.rollback();
         connection.setAutoCommit(true);
         DeterministicDataset.validate(connection, 37, 257, 987654321);
@@ -282,6 +330,21 @@ class DatabaseIntegrationTest {
              ResultSet result = statement.executeQuery("PRAGMA busy_timeout")) {
             assertTrue(result.next());
             assertEquals(5000, result.getInt(1));
+        }
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("PRAGMA temp_store")) {
+            assertTrue(result.next());
+            assertEquals(2, result.getInt(1));
+        }
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("PRAGMA locking_mode")) {
+            assertTrue(result.next());
+            assertEquals("normal", result.getString(1));
+        }
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("PRAGMA read_uncommitted")) {
+            assertTrue(result.next());
+            assertEquals(0, result.getInt(1));
         }
     }
 

@@ -109,6 +109,22 @@ public final class DeterministicDataset {
 
     public static void validate(Connection connection, long rows, int payloadSize, long seed) throws SQLException {
         checkArguments(rows, payloadSize);
+        boolean ownedTransaction = connection.getAutoCommit();
+        if (ownedTransaction) {
+            connection.setAutoCommit(false);
+        }
+        try {
+            validateRows(connection, rows, payloadSize, seed);
+        } finally {
+            if (ownedTransaction) {
+                connection.rollback();
+                connection.setAutoCommit(true);
+            }
+        }
+    }
+
+    private static void validateRows(Connection connection, long rows, int payloadSize, long seed)
+            throws SQLException {
         scan(connection, "customers", rows, (result, id) -> {
             equal(customerName(id), result.getString("name"), "customer name", id);
             equal(email(id), result.getString("email"), "customer email", id);
@@ -271,15 +287,27 @@ public final class DeterministicDataset {
 
     private static void scan(Connection connection, String table, long rows, RowValidator validator)
             throws SQLException {
-        try (Statement statement = connection.createStatement();
-             ResultSet result = statement.executeQuery("SELECT * FROM " + table + " ORDER BY id")) {
+        try (Statement statement = connection.createStatement()) {
+            statement.setFetchSize(256);
             long id = 0;
-            while (result.next()) {
-                id++;
-                equal(id, result.getLong("id"), table + " primary key", id);
-                validator.validate(result, id);
+            // Explicit key windows bound buffering even in pgjdbc simple mode,
+            // where fetchSize alone cannot enable a server-side cursor.
+            for (long first = 1; first <= rows; first += 256) {
+                long last = Math.min(rows, first + 255);
+                try (ResultSet result = statement.executeQuery("SELECT * FROM " + table
+                        + " WHERE id>=" + first + " AND id<=" + last + " ORDER BY id")) {
+                    while (result.next()) {
+                        id++;
+                        equal(id, result.getLong("id"), table + " primary key", id);
+                        validator.validate(result, id);
+                    }
+                }
             }
-            equal(rows, id, table + " row count", 0);
+            equal(rows, id, table + " streamed row count", 0);
+            try (ResultSet result = statement.executeQuery("SELECT COUNT(*) FROM " + table)) {
+                result.next();
+                equal(rows, result.getLong(1), table + " total row count", 0);
+            }
         }
     }
 

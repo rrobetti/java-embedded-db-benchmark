@@ -108,12 +108,16 @@ final class Resources {
         m.put("os", System.getProperty("os.name"));
         m.put("osVersion", System.getProperty("os.version"));
         m.put("architecture", System.getProperty("os.arch"));
+        m.put("timezone", java.util.TimeZone.getDefault().getID());
+        m.put("locale", java.util.Locale.getDefault().toLanguageTag());
         m.put("logicalProcessors", Runtime.getRuntime().availableProcessors());
         var os = ManagementFactory.getOperatingSystemMXBean();
         m.put("physicalRamBytes", os instanceof com.sun.management.OperatingSystemMXBean extended
                 ? extended.getTotalMemorySize() : null);
-        m.put("gitCommit", git("rev-parse", "HEAD"));
-        m.put("gitDirty", git("status", "--porcelain"));
+        m.put("gitCommit", System.getProperty("embeddedbench.gitCommit") != null
+                ? System.getProperty("embeddedbench.gitCommit") : git("rev-parse", "HEAD"));
+        m.put("gitDirty", System.getProperty("embeddedbench.gitDirty") != null
+                ? System.getProperty("embeddedbench.gitDirty") : git("status", "--porcelain"));
         m.put("cpuModel", cpuModel());
         m.put("containerMemoryLimitBytes", cgroupLimit());
         var dependencies = new LinkedHashMap<String, Object>();

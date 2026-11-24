@@ -12,6 +12,13 @@ data. The workload package owns SQL execution and correctness invariants.
 The harness owns scheduling, timing, histograms, process monitoring and
 aggregate reports. It does not substitute mock adapters for native engines.
 
+PGlite uses real 0.0.3 WASM, but its working adapter repairs socket framing
+with the repository's `PgLiteWireBridge` and pgjdbc. This is **not** the
+unmodified upstream PGlite4j JDBC transport. The runtime stays embedded;
+the JDBC socket is loopback-only. Protocol repairs and single-session
+serialization are architectural differences disclosed in results, not
+evidence of upstream-driver performance.
+
 Each child initializes an anchor connection, creates/indexes the schema,
 loads data, prepares workload baselines, warms up, measures and validates.
 Workers use the configured connection policy. Engine shutdown belongs to

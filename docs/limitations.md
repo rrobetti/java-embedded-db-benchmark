@@ -10,6 +10,13 @@
   are meaningful differences, not defects to hide by silently changing SQL.
 - PGlite4j is PostgreSQL-to-WASM, not a normal PostgreSQL server; threading,
   connection and XA claims must follow the adapter/runtime's actual limits.
+- The working PGlite path uses a repository-local framed transport repair,
+  not the unmodified upstream 0.0.3 JDBC driver or named URL. Upstream
+  socket-framing and SQL-error/active-portal limitations cannot be silently
+  reclassified as successful upstream-driver measurements.
+  The explicit `upstream` profile retains the original driver/named URL;
+  individual/prepared loading is tested, but unsafe batched pipelines and
+  SQL-error recovery remain technical limitations with no silent fallback.
 - H2/HSQLDB XA support does not make SQLite/PGlite XA capable. Local
   commit/rollback is not two-phase commit or crash recovery.
 - Dataset loading, worker contention, GC and native allocations can dominate
@@ -36,8 +43,8 @@ and CPU controllers:
 
 ```bash
 systemd-run --user --scope -p MemoryMax=2G -p CPUQuota=200% \
-  bash scripts/benchmark.sh --offline --profile standard \
-  --memory-budget 1536m --jvm-heap 512m --threads 2 --connections 2
+  bash scripts/benchmark.sh --offline --profile quick \
+  --memory-budget 1536m --jvm-heap 768m --threads 1 --connections 1
 ```
 
 This is an **optional external operation**, not performed by setup. Verify

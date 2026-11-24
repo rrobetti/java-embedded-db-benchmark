@@ -15,6 +15,8 @@ import java.util.Map;
 final class Measurements {
     private final Map<String, Histogram> histograms = new LinkedHashMap<>();
     private final Map<String, Long> units = new LinkedHashMap<>();
+    private final long[] standardUnits = new long[4];
+    private final Map<String, String> categoryAliases = new java.util.HashMap<>();
     private final Map<String, Long> errors = new LinkedHashMap<>();
     private final Map<String, String> errorSamples = new LinkedHashMap<>();
     private long attempts;
@@ -34,12 +36,38 @@ final class Measurements {
     }
 
     synchronized void success(String category, long count, long latencyNanos) {
-        if (category == null || !category.matches("[a-zA-Z0-9_-]+"))
-            throw new IllegalArgumentException("Invalid operation category");
-        String normalized = category.toLowerCase(Locale.ROOT);
-        histograms.computeIfAbsent(normalized, ignored -> histogram()).recordValue(Math.max(1, latencyNanos));
-        units.merge(normalized, count, Long::sum);
+        String normalized = category;
+        Histogram h = histograms.get(category);
+        if (h == null) {
+            normalized = categoryAliases.get(category);
+            if (normalized == null) {
+                if (category == null || !category.matches("[a-zA-Z0-9_-]+"))
+                    throw new IllegalArgumentException("Invalid operation category");
+                normalized = category.toLowerCase(Locale.ROOT);
+                categoryAliases.put(category, normalized);
+            }
+            h = histograms.computeIfAbsent(normalized, ignored -> histogram());
+        }
+        h.recordValue(Math.max(1, latencyNanos));
+        int index = standardCategory(normalized);
+        if (index >= 0) standardUnits[index] += count;
+        else units.merge(normalized, count, Long::sum);
         attempts++; successes++;
+    }
+
+    private static int standardCategory(String category) {
+        return switch (category) {
+            case "read" -> 0;
+            case "write" -> 1;
+            case "analytical" -> 2;
+            case "transaction" -> 3;
+            default -> -1;
+        };
+    }
+
+    private long unitsFor(String category) {
+        int index = standardCategory(category);
+        return index >= 0 ? standardUnits[index] : units.getOrDefault(category, 0L);
     }
 
     synchronized void failure(Throwable error) {
@@ -52,6 +80,20 @@ final class Measurements {
     synchronized void reject() {
         attempts++; rejected++;
         errors.merge("REJECTED", 1L, Long::sum);
+    }
+
+    synchronized void merge(Measurements other) {
+        if (other == this) throw new IllegalArgumentException("Cannot merge a collector with itself");
+        synchronized (other) {
+            attempts += other.attempts; successes += other.successes;
+            failed += other.failed; rejected += other.rejected;
+            for (int i = 0; i < standardUnits.length; i++) standardUnits[i] += other.standardUnits[i];
+            for (var entry : other.histograms.entrySet())
+                histograms.computeIfAbsent(entry.getKey(), ignored -> histogram()).add(entry.getValue());
+            other.units.forEach((key, value) -> units.merge(key, value, Long::sum));
+            other.errors.forEach((key, value) -> errors.merge(key, value, Long::sum));
+            other.errorSamples.forEach(errorSamples::putIfAbsent);
+        }
     }
 
     synchronized Map<String, Object> report(double seconds, double offeredSeconds) {
@@ -70,7 +112,7 @@ final class Measurements {
         for (var entry : histograms.entrySet()) {
             Histogram h = entry.getValue();
             var stats = new LinkedHashMap<String, Object>();
-            stats.put("count", h.getTotalCount()); stats.put("units", units.getOrDefault(entry.getKey(), 0L));
+            stats.put("count", h.getTotalCount()); stats.put("units", unitsFor(entry.getKey()));
             stats.putAll(histogramStats(h));
             latency.put(entry.getKey(), stats);
         }

@@ -98,6 +98,21 @@ class HarnessTest {
             assertEquals(1, histogram.getTotalCount());
             assertEquals(2500, histogram.getEndTimeStamp() - histogram.getStartTimeStamp());
         }
+        var anotherWorker = new Measurements();
+        anotherWorker.success("read", 1, 2_000);
+        anotherWorker.failure(new OutOfMemoryError("test classification"));
+        measurements.merge(anotherWorker);
+        Map<String, Object> merged = measurements.report(1, 1);
+        assertEquals(7L, merged.get("attempts"));
+        assertEquals(3L, merged.get("successes"));
+        assertEquals(1L, ((Map<?, ?>) merged.get("errors")).get("OOM"));
+        assertEquals(2L, ((Map<?, ?>) ((Map<?, ?>) merged.get("latency")).get("read")).get("count"));
+        measurements.success("READ", 4, 3_000);
+        measurements.success("custom-read", 9, 4_000);
+        measurements.success("custom-read", 9, 5_000);
+        Map<?, ?> categories = (Map<?, ?>) measurements.report(1, 1).get("latency");
+        assertEquals(6L, ((Map<?, ?>) categories.get("read")).get("units"));
+        assertEquals(18L, ((Map<?, ?>) categories.get("custom-read")).get("units"));
     }
 
     @Test void closedLoopLimitsAreGlobalAndWarmupSeparate() throws Exception {
@@ -138,6 +153,43 @@ class HarnessTest {
         assertEquals("BENCH_CORRECTNESS", exception.getSQLState());
     }
 
+    @Test void boundedPoolLeasesWholeOperationsWithoutConcurrentConnectionUse() throws Exception {
+        BenchmarkOptions options = options();
+        options.threadSpec = "4"; options.connections = 2; options.maxOperations = 40; options.resolve();
+        var busy = new java.util.concurrent.ConcurrentHashMap<Connection, Boolean>();
+        var connectionList = new ArrayList<Connection>();
+        for (int i = 0; i < 2; i++) {
+            Connection connection = (Connection) java.lang.reflect.Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                    new Class<?>[]{Connection.class}, (proxy, method, args) -> switch (method.getName()) {
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "equals" -> proxy == args[0];
+                        default -> null;
+                    });
+            connectionList.add(connection);
+        }
+        AtomicLong executed = new AtomicLong();
+        Workload workload = new Workload() {
+            @Override public Operation execute(Connection c, SplittableRandom r) throws SQLException {
+                if (busy.putIfAbsent(c, true) != null) throw new SQLException("Concurrent use of leased connection", "BENCH_CORRECTNESS");
+                try {
+                    Thread.sleep(2);
+                    executed.incrementAndGet();
+                    return new Operation("transaction", 1);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new SQLException(e);
+                } finally { busy.remove(c); }
+            }
+            @Override public void validate(Connection c) {}
+        };
+        var phase = PhaseRunner.run(workload, connectionList, 4, false, options, 1, 1);
+        assertEquals(40L, phase.measurements().report(1, 1).get("successes"));
+        assertEquals(40, executed.get());
+        assertTrue(busy.isEmpty());
+        options.connectionMode = "dedicated";
+        assertThrows(IllegalArgumentException.class, options::resolve);
+    }
+
     @Test void admissionFailurePersistsAndSuiteContinues() throws Exception {
         Path directory = directory();
         int code = new CommandLine(new BenchmarkCli()).execute("--profile", "smoke", "--databases", "h2,sqlite",
@@ -152,6 +204,21 @@ class HarnessTest {
         }
         for (String extension : List.of("json", "csv", "md", "html"))
             assertTrue(Files.size(directory.resolve("report." + extension)) > 0);
+    }
+
+    @Test void noResultFailuresAreClassifiedFromLogsNotExitCodes() throws Exception {
+        Path directory = directory();
+        assertEquals("CHILD_EXIT", BenchmarkCli.childExitKind(directory));
+        Files.writeString(directory.resolve("stderr.log"), "Terminating due to java.lang.OutOfMemoryError: Java heap space");
+        assertEquals("OOM", BenchmarkCli.childExitKind(directory));
+        Files.writeString(directory.resolve("stderr.log"), "Native memory allocation (malloc) failed to allocate 4096 bytes");
+        assertEquals("NATIVE_ALLOCATION", BenchmarkCli.childExitKind(directory));
+        Files.writeString(directory.resolve("stderr.log"), "# A fatal error has been detected by the Java Runtime Environment:\n# SIGSEGV");
+        assertEquals("JVM_CRASH", BenchmarkCli.childExitKind(directory));
+        Files.writeString(directory.resolve("stderr.log"), "Process exited with code 137");
+        assertEquals("CHILD_EXIT", BenchmarkCli.childExitKind(directory));
+        Files.writeString(directory.resolve("stdout.log"), "x".repeat(80_000) + "\njava.lang.OutOfMemoryError");
+        assertEquals("OOM", BenchmarkCli.childExitKind(directory));
     }
 
     @Test void realH2ChildValidatesAndDeletesDataset() throws Exception {
@@ -181,6 +248,9 @@ class HarnessTest {
         assertFalse(html.contains("<script>"));
         assertTrue(html.contains("&lt;script&gt;"));
         assertFalse(html.contains("<svg"));
+        String[] lines = ReportWriter.csv(List.of(Map.of("runId", "run", "engine", "h2", "scenario", "point",
+                "status", "FAILED", "valid", false))).split("\r\n");
+        assertEquals(lines[0].split(",", -1).length, lines[1].split(",", -1).length);
     }
 
     @Test void mutatingWarmupIsResetBeforeMeasurement() throws Exception {

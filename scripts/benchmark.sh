@@ -42,4 +42,4 @@ if command -v findmnt >/dev/null && findmnt -no OPTIONS -T "$native_tmp" | grep 
   echo "Set BENCHMARK_NATIVE_TMP to a writable executable filesystem (current mount is noexec)." >&2; exit 1
 fi
 if [[ ${#benchmark_args[@]} -eq 0 ]]; then benchmark_args=(--profile quick); fi
-exec java "-Xmx$heap" "-Djava.io.tmpdir=$native_tmp" -jar target/benchmark.jar "${benchmark_args[@]}"
+exec java "-Xmx$heap" "-Djava.io.tmpdir=$native_tmp" "-Dorg.sqlite.tmpdir=$native_tmp" -jar target/benchmark.jar "${benchmark_args[@]}"

@@ -7,7 +7,7 @@ merely the presence of `java`. The Maven wrapper supplies Maven.
 
 ```bash
 bash scripts/setup.sh
-java -cp target/benchmark.jar io.github.embeddedbench.db.DatabaseSmoke \
+java -Xmx1024m -cp target/benchmark.jar io.github.embeddedbench.db.DatabaseSmoke \
   --databases h2,hsqldb,sqlite,pglite
 ```
 
@@ -15,6 +15,8 @@ PowerShell 7: `pwsh -File scripts/setup.ps1`. Scripts print OS, CPU architecture
 logical CPUs and physical RAM, resolve with `dependency:go-offline`, package
 and execute real connectivity. They do not install packages or use elevation.
 Physical RAM is not necessarily a container's usable memory allowance.
+The standalone connectivity JVM is capped at 1024m Java heap; package tests
+use the limits configured by Maven/Surefire.
 
 The pinned dependencies are in `pom.xml`: H2 2.5.252, HSQLDB 2.7.4,
 Xerial sqlite-jdbc 3.54.1.0 and PGlite4j JDBC 0.0.3. PGlite4j is the published
@@ -23,7 +25,10 @@ PostgreSQL executable. Its runtime comes through Maven dependencies.
 H2/HSQLDB are Java; SQLite requires extraction/loading of the native library
 bundled in its JDBC jar.
 PGlite4j uses Chicory, a pure-Java WASM runtime; it does not require a native
-PGlite JNI library. Its JDBC path opens an internal loopback socket.
+PGlite JNI library. The working benchmark adapter uses a local framed
+transport repair over the real core/WASM and pgjdbc, not the unmodified
+upstream JDBC driver/named URL. Its actual URL uses an internal
+`127.0.0.1` pgjdbc socket; see [configuration](database-configuration.md).
 The project overrides PGlite4j's transitive pgjdbc 42.7.5 with **42.7.15**
 in dependency management: the older version has SCRAM CPU-exhaustion and
 channel-binding-downgrade advisories. This override must pass actual
@@ -43,7 +48,8 @@ failure is not permission to silently download or substitute a database.
 PowerShell setup takes `-Offline`; benchmark takes `--offline`.
 
 Set `BENCHMARK_NATIVE_TMP` to a user-owned path when default extraction fails.
-The launchers pass it as `java.io.tmpdir`. On Unix both directory-search and
+The launchers pass it as `java.io.tmpdir` and `org.sqlite.tmpdir`.
+On Unix both directory-search and
 write permissions are needed, and a `noexec` mount may block native loading.
 On Windows inspect DLL architecture, antivirus/application-control logs and
 access permissions. Do not disable security policy globally, `chmod 777`, or

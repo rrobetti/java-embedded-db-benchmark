@@ -110,7 +110,7 @@ class XaIntegrationTest {
     private static XADataSource source(String engine) throws SQLException {
         if ("h2".equals(engine)) {
             JdbcDataSource source = new JdbcDataSource();
-            source.setURL("jdbc:h2:mem:benchmark");
+            source.setURL("jdbc:h2:mem:benchmark;DB_CLOSE_DELAY=-1");
             source.setUser("sa");
             source.setPassword("");
             return source;

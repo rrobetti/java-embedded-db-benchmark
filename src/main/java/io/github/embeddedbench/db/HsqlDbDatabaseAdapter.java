@@ -13,8 +13,8 @@ public final class HsqlDbDatabaseAdapter extends AbstractDatabaseAdapter {
     }
 
     public HsqlDbDatabaseAdapter(String profile) {
-        if (!"default".equals(profile) && !"mvcc".equals(profile)) {
-            throw new IllegalArgumentException("HSQLDB profile must be default or mvcc: " + profile);
+        if (!"default".equals(profile) && !"mvcc".equals(profile) && !"locks".equals(profile)) {
+            throw new IllegalArgumentException("HSQLDB profile must be default, mvcc or locks: " + profile);
         }
         this.profile = profile;
     }
@@ -36,7 +36,7 @@ public final class HsqlDbDatabaseAdapter extends AbstractDatabaseAdapter {
 
     @Override
     void afterInitialize(Connection connection) throws SQLException {
-        if ("mvcc".equals(profile)) {
+        if (!"locks".equals(profile)) {
             try (Statement statement = connection.createStatement()) {
                 statement.execute("SET DATABASE TRANSACTION CONTROL MVCC");
             }
@@ -55,8 +55,8 @@ public final class HsqlDbDatabaseAdapter extends AbstractDatabaseAdapter {
 
     @Override
     public Capabilities capabilities() {
-        return new Capabilities(true, true, "mvcc".equals(profile), xaProbe.supported(), true, "embedded-jdbc",
-                "mvcc".equals(profile) ? "MVCC; conflicting row writers may block."
+        return new Capabilities(true, true, !"locks".equals(profile), xaProbe.supported(), true, "embedded-jdbc",
+                !"locks".equals(profile) ? "MVCC; conflicting row writers may block."
                         : "Engine default LOCKS transaction control uses table locks; readers can block behind writers.");
     }
 }

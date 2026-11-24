@@ -20,7 +20,7 @@ public final class H2DatabaseAdapter extends AbstractDatabaseAdapter {
 
     @Override
     String jdbcUrl() {
-        return "jdbc:h2:mem:benchmark";
+        return "jdbc:h2:mem:benchmark;DB_CLOSE_DELAY=-1";
     }
 
     @Override

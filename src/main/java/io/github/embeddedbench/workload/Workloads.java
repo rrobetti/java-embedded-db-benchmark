@@ -21,13 +21,15 @@ public final class Workloads {
             "transactions", "write", "insert", "update", "delete", "batch-update", "upsert",
             "rollback", "cache-populate", "cache-invalidate", "cache-bulk-invalidate",
             "cache-refresh", "cache-incremental", "cache-expire", "cache-replace",
-            "contended-write", "contended-transactions", "long-transactions");
+            "contended-write", "contended-transactions", "long-transactions", "deadlocks");
 
     private Workloads() {}
 
     public static Workload create(String name, long rows, int rangeRows, int readPercent,
                                   int analyticalPercent, int transactionSize, long seed) {
         if (!NAMES.contains(name)) throw new IllegalArgumentException("Unknown workload: " + name);
+        if (name.equals("deadlocks") && rows < 2)
+            throw new IllegalArgumentException("Deadlock workloads require at least two accounts");
         if (rows < 1 || rangeRows < 1 || transactionSize < 1 || readPercent < 0 || readPercent > 100
                 || analyticalPercent < 0 || analyticalPercent > 100)
             throw new IllegalArgumentException("Invalid workload parameters");
@@ -90,7 +92,7 @@ public final class Workloads {
                 case "htap" -> r.nextInt(100) < analyticalPercent ? analytical(c, r) : mixed(c, r);
                 case "mixed" -> mixed(c, r);
                 case "cache" -> r.nextInt(100) < readPercent ? point(c, r.nextLong(rows) + 1) : maintenance(c, r);
-                case "transactions", "contended-transactions", "long-transactions" -> transfer(c, r, false, transactionSize);
+                case "transactions", "contended-transactions", "long-transactions", "deadlocks" -> transfer(c, r, false, transactionSize);
                 case "contended-write" -> transfer(c, r, false, 1);
                 case "rollback" -> transfer(c, r, true, transactionSize);
                 case "update", "cache-incremental" -> transfer(c, r, false, 1);
@@ -139,7 +141,7 @@ public final class Workloads {
             long start = r.nextLong(rows - size + 1) + 1;
             PreparedStatement s = statement(c, indexed
                     ? "SELECT id,name,email,payload FROM customers WHERE id>=? AND id<? ORDER BY id"
-                    : "SELECT id,name,email,payload FROM customers WHERE id+0>=? AND id+0<? ORDER BY id");
+                    : "SELECT id,name,email,payload FROM customers WHERE CAST(REPLACE(name,'customer-','') AS BIGINT)>=? AND CAST(REPLACE(name,'customer-','') AS BIGINT)<? ORDER BY id");
             s.setLong(1, start);
             s.setLong(2, start + size);
             if (consume(s) != size) throw incorrect("Range cardinality mismatch");
@@ -183,21 +185,31 @@ public final class Workloads {
         }
 
         private Operation transfer(Connection c, SplittableRandom r, boolean rollback, int size) throws SQLException {
-            long first = name.startsWith("contended-") ? 1 : r.nextLong(rows) + 1;
-            long second = rows == 1 ? first : (first % rows) + 1;
-            long low = Math.min(first, second), high = Math.max(first, second);
+            boolean deadlocks = name.equals("deadlocks");
+            long first = deadlocks ? (r.nextBoolean() ? 1 : Math.min(2, rows))
+                    : name.startsWith("contended-") ? 1 : r.nextLong(rows) + 1;
+            long second = rows == 1 ? first : deadlocks ? 3 - first : (first % rows) + 1;
+            long low = deadlocks ? first : Math.min(first, second);
+            long high = deadlocks ? second : Math.max(first, second);
             transaction(c, rollback, () -> {
                 PreparedStatement s = statement(c, "UPDATE accounts SET balance=balance+? WHERE id=?");
                 s.clearBatch();
                 for (int i = 0; i < size; i++) {
                     s.setBigDecimal(1, BigDecimal.ONE);
                     s.setLong(2, low);
-                    s.addBatch();
+                    if (deadlocks) {
+                        if (s.executeUpdate() != 1) throw incorrect("Deadlock account disappeared");
+                        java.util.concurrent.locks.LockSupport.parkNanos(10_000_000L);
+                        if (Thread.currentThread().isInterrupted())
+                            throw new java.sql.SQLTimeoutException("Interrupted deadlock transaction");
+                    } else s.addBatch();
                     s.setBigDecimal(1, BigDecimal.ONE.negate());
                     s.setLong(2, high);
-                    s.addBatch();
+                    if (deadlocks) {
+                        if (s.executeUpdate() != 1) throw incorrect("Deadlock account disappeared");
+                    } else s.addBatch();
                 }
-                checkBatch(s.executeBatch());
+                if (!deadlocks) checkBatch(s.executeBatch());
                 PreparedStatement read = statement(c, "SELECT balance FROM accounts WHERE id=?");
                 read.setLong(1, low);
                 if (consume(read) != 1) throw incorrect("Transfer account disappeared");
@@ -207,7 +219,7 @@ public final class Workloads {
                         throw new java.sql.SQLTimeoutException("Interrupted long transaction");
                 }
             });
-            return name.endsWith("transactions") || rollback ? TRANSACTION : WRITE;
+            return name.endsWith("transactions") || deadlocks || rollback ? TRANSACTION : WRITE;
         }
 
         private Operation populate(Connection c, int size) throws SQLException {
@@ -241,7 +253,8 @@ public final class Workloads {
         }
 
         private Operation upsert(Connection c, SplittableRandom r) throws SQLException {
-            long id = nextId.getAndIncrement();
+            long id = r.nextBoolean() ? r.nextLong(rows) + 1 : nextId.getAndIncrement();
+            boolean[] added = {false};
             transaction(c, false, () -> {
                 PreparedStatement u = statement(c, "UPDATE financial_transactions SET amount=? WHERE id=?");
                 u.setBigDecimal(1, new BigDecimal("1.25"));
@@ -251,11 +264,10 @@ public final class Workloads {
                     s.setLong(1, id); s.setLong(2, 1);
                     s.setBigDecimal(3, new BigDecimal("1.25")); s.setTimestamp(4, TIME);
                     if (s.executeUpdate() != 1) throw incorrect("Upsert failed");
+                    added[0] = true;
                 }
-                u.setBigDecimal(1, new BigDecimal("1.25"));
-                if (u.executeUpdate() != 1) throw incorrect("Upsert update branch failed");
             });
-            inserted.incrementAndGet();
+            if (added[0]) inserted.incrementAndGet();
             return WRITE;
         }
 

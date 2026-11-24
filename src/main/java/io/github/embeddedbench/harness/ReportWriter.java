@@ -13,11 +13,14 @@ import java.util.Map;
 final class ReportWriter {
     private static final String NOTES = "Each row is one fresh JVM. Engine order is seeded and randomized within each scenario/repetition; "
             + "runs are sequential. Percentiles are per-category HdrHistogram measurements, never averages of percentiles. "
+            + "Workers have independent latency/counter collectors merged after completion, with no shared metrics lock in the hot path. "
             + "Compatible repetitions are aggregated by merging raw histograms; aggregate throughput is total successes / total elapsed time. "
             + "Latency counts successful operations only. Open-loop latency includes scheduled-arrival queue delay; rejected arrivals "
             + "are counted separately. Warmup has separate counters and histograms and a full drain barrier before measurement. "
             + "Mutating warmup workloads are validated and reset to the identical seeded dataset before measurement; "
             + "reset cost is reported separately and excluded from the measurement window. "
+            + "Driver initialization is measured separately; database boot plus the anchor connection and XA probes are an inseparable composite. "
+            + "The first worker connection is not the first chronological JDBC connection. "
             + "Throughput uses actual measurement elapsed time including drain. null/N/A means unavailable or not exercised. "
             + "Correctness failures and unsupported operations invalidate comparisons; errors are never silently retried. "
             + "Architecture/capability declarations are not measured performance. PGlite's single shared session is not independent transactions.";
@@ -30,17 +33,21 @@ final class ReportWriter {
         report.put("schemaVersion", 1);
         report.put("environment", environment); report.put("configuration", configuration);
         report.put("methodology", NOTES); report.put("results", results);
-        report.put("aggregates", HistogramAggregation.merge(directory, results));
+        var aggregates = HistogramAggregation.merge(directory, results);
+        report.put("aggregates", aggregates);
+        report.put("largestSuccessfulDatasetsObserved", largestDatasets(results));
         BenchmarkCli.writeJson(directory.resolve("report.json"), report);
         Files.writeString(directory.resolve("report.csv"), csv(results), StandardCharsets.UTF_8);
-        Files.writeString(directory.resolve("report.md"), markdown(results), StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve("report.md"), markdown(results) + aggregateMarkdown(aggregates), StandardCharsets.UTF_8);
+        Files.writeString(directory.resolve("report-aggregates.csv"), aggregateCsv(aggregates), StandardCharsets.UTF_8);
         Files.writeString(directory.resolve("report.html"), html(report, results), StandardCharsets.UTF_8);
     }
 
     static String csv(List<Map<String, Object>> results) {
         var b = new StringBuilder();
         csvRow(b, List.of("run_id", "engine", "scenario", "repetition", "status", "valid", "connection_mode",
-                "effective_connections", "category", "attempts", "successes", "failures", "rejected",
+                "effective_connections", "actual_jdbc_url", "requested_jdbc_url", "driver_name", "driver_version", "transport_deviation",
+                "category", "attempts", "successes", "failures", "rejected",
                 "error_rate", "timeout_rate", "rejection_rate", "retry_count", "retry_rate",
                 "elapsed_seconds", "throughput_ops_per_second", "category_count", "category_units",
                 "min_ns", "mean_ns", "p50_ns", "p90_ns", "p95_ns", "p99_ns", "p999_ns", "max_ns", "load_ns", "logical_dataset_bytes",
@@ -55,7 +62,8 @@ final class ReportWriter {
                 Map<?, ?> stats = map(latency.get(category));
                 var values = new ArrayList<Object>();
                 for (String key : List.of("runId", "engine", "scenario", "repetition", "status", "valid",
-                        "effectiveConnectionMode", "effectiveConnections")) values.add(r.get(key));
+                        "effectiveConnectionMode", "effectiveConnections", "jdbcUrl", "requestedJdbcUrl", "driverName", "driverVersion",
+                        "transportDeviation")) values.add(r.get(key));
                 values.add(category);
                 for (String key : List.of("attempts", "successes", "failures", "rejected", "errorRate", "timeoutRate",
                         "rejectionRate", "retryCount", "retryRate", "elapsedSeconds", "throughputOpsPerSecond"))
@@ -80,15 +88,59 @@ final class ReportWriter {
         b.append("\r\n");
     }
 
+    private static String aggregateCsv(List<Map<String, Object>> aggregates) {
+            var b = new StringBuilder();
+            csvRow(b, List.of("engine", "scenario", "threads", "rows", "source_runs", "category", "count",
+                    "min_ns", "mean_ns", "p50_ns", "p90_ns", "p95_ns", "p99_ns", "p999_ns", "max_ns",
+                    "throughput_ops_per_second", "run_throughput_min", "run_throughput_max", "run_throughput_population_stddev"));
+            for (Map<String, Object> a : aggregates) {
+                Map<?, ?> config = map(a.get("configuration"));
+                Map<?, ?> variability = map(a.get("throughputRunToRunVariability"));
+                for (var category : map(a.get("latency")).entrySet()) {
+                    var values = new ArrayList<Object>();
+                    values.add(a.get("engine")); values.add(a.get("scenario"));
+                    values.add(config.get("threads")); values.add(config.get("rows")); values.add(a.get("sourceRunIds"));
+                    values.add(category.getKey());
+                    Map<?, ?> stats = map(category.getValue());
+                    for (String key : List.of("count", "minNanos", "meanNanos", "p50Nanos", "p90Nanos", "p95Nanos", "p99Nanos", "p999Nanos", "maxNanos"))
+                        values.add(stats.get(key));
+                    values.add(a.get("throughputOpsPerSecond")); values.add(variability.get("min"));
+                    values.add(variability.get("max")); values.add(variability.get("populationStdDev"));
+                    csvRow(b, values);
+                }
+            }
+            return b.toString();
+        }
+
+    private static String aggregateMarkdown(List<Map<String, Object>> aggregates) {
+            var b = new StringBuilder("\n## Compatible repetition aggregates\n\n"
+                    + "Raw histograms are merged only for identical configurations. Throughput is total successes / total elapsed time. "
+                    + "Run-to-run standard deviation is population standard deviation of individual run throughputs, not a latency percentile average.\n\n"
+                    + "| Engine | Workload | Threads | Rows | Runs | Ops/s | Min run ops/s | Max run ops/s | Stddev ops/s |\n"
+                    + "|---|---|---:|---:|---:|---:|---:|---:|---:|\n");
+            for (Map<String, Object> a : aggregates) {
+                Map<?, ?> config = map(a.get("configuration"));
+                Map<?, ?> variability = map(a.get("throughputRunToRunVariability"));
+                b.append('|').append(md(a.get("engine"))).append('|').append(md(a.get("scenario"))).append('|')
+                        .append(md(config.get("threads"))).append('|').append(md(config.get("rows"))).append('|')
+                        .append(((List<?>) a.get("sourceRunIds")).size()).append('|')
+                        .append(formatScaled(a.get("throughputOpsPerSecond"), 1)).append('|')
+                        .append(formatScaled(variability.get("min"), 1)).append('|')
+                        .append(formatScaled(variability.get("max"), 1)).append('|')
+                        .append(formatScaled(variability.get("populationStdDev"), 1)).append("|\n");
+            }
+            return b.append("\nMerged latency percentiles and source histogram paths are in `report.json` and `report-aggregates.csv`.\n").toString();
+        }
     static String markdown(List<Map<String, Object>> results) {
         var b = new StringBuilder("# Embedded JDBC benchmark\n\n").append(NOTES).append("\n\n");
-        b.append("## Measured runs\n\n| Run | Engine | Scenario | Status | Valid | Ops/s | Failures | Rejected | Mode |\n")
-                .append("|---|---|---|---|---|---:|---:|---:|---|\n");
+        b.append("## Measured runs\n\n| Run | Engine | Scenario | Status | Valid | Ops/s | Failures | Rejected | Mode | Actual JDBC URL | Transport deviation |\n")
+                .append("|---|---|---|---|---|---:|---:|---:|---|---|---|\n");
         for (Map<String, Object> r : results) {
             Map<?, ?> m = map(r.get("measurement"));
             b.append('|');
             for (Object value : new Object[]{r.get("runId"), r.get("engine"), r.get("scenario"), r.get("status"),
-                    r.get("valid"), m.get("throughputOpsPerSecond"), m.get("failures"), m.get("rejected"), r.get("effectiveConnectionMode")})
+                    r.get("valid"), m.get("throughputOpsPerSecond"), m.get("failures"), m.get("rejected"), r.get("effectiveConnectionMode"),
+                    r.get("jdbcUrl"), r.get("transportDeviation")})
                 b.append(' ').append(md(value)).append(" |");
             b.append('\n');
         }
@@ -141,19 +193,21 @@ final class ReportWriter {
                 """);
         b.append("<p>").append(escape(NOTES)).append("</p>");
         b.append("<h2>Measured runs</h2><div class=\"scroll\"><table><thead><tr>");
-        for (String h : List.of("Run", "Engine", "Workload", "Status / correctness", "Ops/s", "Failures / rejected", "Effective execution", "Artifacts"))
+        for (String h : List.of("Run", "Engine / transport", "Workload", "Status / correctness", "Ops/s", "Failures / rejected", "Effective execution", "Actual JDBC URL", "Artifacts"))
             b.append("<th>").append(h).append("</th>");
         b.append("</tr></thead><tbody>");
         for (Map<String, Object> r : results) {
             Map<?, ?> m = map(r.get("measurement"));
             b.append("<tr>");
-            cell(b, r.get("runId")); cell(b, r.get("engine")); cell(b, r.get("scenario"));
+            cell(b, r.get("runId")); cell(b, r.get("engine") + (Boolean.TRUE.equals(r.get("transportDeviation"))
+                    ? " — ADAPTER TRANSPORT DEVIATION" : "")); cell(b, r.get("scenario"));
             b.append("<td class=\"").append(Boolean.TRUE.equals(r.get("valid")) && "OK".equals(r.get("status")) ? "ok" : "bad")
                     .append("\">").append(escape(r.get("status"))).append(" / ").append(escape(r.get("valid"))).append("</td>");
             cell(b, formatScaled(m.get("throughputOpsPerSecond"), 1));
             cell(b, shown(m.get("failures")) + " / " + shown(m.get("rejected")));
             cell(b, shown(r.get("effectiveConnectionMode")) + " (" + shown(r.get("effectiveConnections")) + " connections; "
                     + shown(r.get("effectiveWorkers")) + " workers)");
+            cell(b, r.get("jdbcUrl"));
             b.append("<td>");
             if (r.get("artifactDirectory") != null) {
                 String path = escape(r.get("artifactDirectory"));
@@ -224,6 +278,8 @@ final class ReportWriter {
             b.append("<details><summary>").append(escape(r.get("runId"))).append(" — resource stages, warmup and errors</summary><pre>")
                     .append(escape(Json.encode(r))).append("</pre></details>");
         }
+        b.append("<h2>Largest successful datasets observed</h2><p>These are observations in this suite under each recorded memory/workload/concurrency configuration, "
+                + "not extrapolated capacity limits.</p><pre>").append(escape(Json.encode(report.get("largestSuccessfulDatasetsObserved")))).append("</pre>");
         b.append("<h2>Reproducibility</h2><details open><summary>Environment and exact configuration</summary><pre>")
                 .append(escape(Json.encode(report.get("environment")))).append("\n\n")
                 .append(escape(Json.encode(report.get("configuration")))).append("</pre></details>"
@@ -276,6 +332,32 @@ final class ReportWriter {
             }
         }
         return new ArrayList<>(unique.values());
+    }
+
+    private static List<Map<String, Object>> largestDatasets(List<Map<String, Object>> results) {
+        var largest = new LinkedHashMap<String, Map<String, Object>>();
+        for (Map<String, Object> r : results) {
+            if (!Boolean.TRUE.equals(r.get("valid")) || !"OK".equals(r.get("status"))) continue;
+            Map<?, ?> config = map(r.get("configuration"));
+            if (!(config.get("rows") instanceof Number rows)) continue;
+            String key = r.get("engine") + "/" + r.get("scenario") + "/" + config.get("jvmHeapBytes")
+                    + "/" + r.get("effectiveMemoryBudgetBytes") + "/" + config.get("threads") + "/"
+                    + r.get("effectiveConnectionMode") + "/" + config.get("requestRate");
+            Map<String, Object> previous = largest.get(key);
+            if (previous == null || ((Number) previous.get("rows")).longValue() < rows.longValue()) {
+                var observation = new LinkedHashMap<String, Object>();
+                observation.put("engine", r.get("engine")); observation.put("scenario", r.get("scenario"));
+                observation.put("threads", config.get("threads")); observation.put("requestRate", config.get("requestRate"));
+                observation.put("effectiveConnectionMode", r.get("effectiveConnectionMode"));
+                observation.put("jvmHeapBytes", config.get("jvmHeapBytes"));
+                observation.put("effectiveMemoryBudgetBytes", r.get("effectiveMemoryBudgetBytes"));
+                observation.put("rows", rows); observation.put("logicalDatasetBytes", r.get("logicalDatasetBytes"));
+                observation.put("sourceRunId", r.get("runId"));
+                observation.put("interpretation", "Largest successful dataset observed in this suite, not an extrapolated capacity limit");
+                largest.put(key, observation);
+            }
+        }
+        return new ArrayList<>(largest.values());
     }
 
     private static Map<?, ?> stage(Map<String, Object> result, String name) { return map(map(result.get("stages")).get(name)); }

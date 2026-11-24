@@ -4,6 +4,8 @@ import io.github.embeddedbench.db.DeterministicDataset;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Mixin;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
@@ -26,7 +28,10 @@ import java.util.concurrent.TimeUnit;
 @Command(name = "embedded-benchmark", mixinStandardHelpOptions = true, version = "1.0",
         description = "Isolated, seeded, sequential embedded JDBC benchmark. Each run uses a fresh JVM.")
 public final class BenchmarkCli implements Callable<Integer> {
+    private static final Logger LOG = LoggerFactory.getLogger(BenchmarkCli.class);
     @Mixin BenchmarkOptions options = new BenchmarkOptions();
+    private String gitCommit;
+    private String gitDirty;
 
     public static void main(String[] args) {
         System.exit(new CommandLine(new BenchmarkCli()).execute(args));
@@ -42,6 +47,8 @@ public final class BenchmarkCli implements Callable<Integer> {
         }
         var results = new ArrayList<Map<String, Object>>();
         var environment = Resources.environment();
+        gitCommit = (String) environment.get("gitCommit");
+        gitDirty = (String) environment.get("gitDirty");
         var random = new Random(options.seed);
         String suite = Instant.now().toString().replace(':', '-') + "-" + UUID.randomUUID().toString().substring(0, 8);
         Path suiteDirectory = options.output.resolve("runs").resolve(suite);
@@ -57,10 +64,11 @@ public final class BenchmarkCli implements Callable<Integer> {
                     for (String engine : engines) {
                         String runId = String.format("%04d-%s-%s-t%d-r%d", sequence++, engine, scenario, threadCount, repetition + 1);
                         Path directory = suiteDirectory.resolve(runId);
-                        System.out.printf("Running %s/%s repetition %d%n", engine, scenario, repetition + 1);
+                        LOG.info("Running {}/{} threads={} repetition={}", engine, scenario, threadCount, repetition + 1);
                         Map<String, Object> result;
                         try { result = supervise(engine, scenario, runId, directory); }
                         catch (Exception error) {
+                            LOG.error("Supervisor failed for {}", runId, error);
                             result = failure(engine, scenario, runId, "SUPERVISOR_ERROR", Measurements.describe(error));
                             Files.createDirectories(directory);
                             writeJson(directory.resolve("result.json"), result);
@@ -70,7 +78,7 @@ public final class BenchmarkCli implements Callable<Integer> {
                         result.put("artifactDirectory", options.output.relativize(directory).toString().replace(File.separatorChar, '/'));
                         results.add(result);
                         ReportWriter.write(options.output, environment, options.asMap(), results);
-                        System.out.println("  " + result.get("status") + (result.containsKey("error") ? ": " + result.get("error") : ""));
+                        LOG.info("{}: {}{}", runId, result.get("status"), result.containsKey("error") ? ": " + result.get("error") : "");
                     }
                 }
             }
@@ -81,8 +89,8 @@ public final class BenchmarkCli implements Callable<Integer> {
 
     private Map<String, Object> supervise(String engine, String scenario, String runId, Path directory) throws Exception {
         Files.createDirectories(directory);
-        String heap = engine.equals("pglite") && options.heapDefault ? "768m" : options.jvmHeap;
-        String memoryBudget = engine.equals("pglite") && options.budgetDefault ? "2g" : options.memoryBudget;
+        String heap = options.jvmHeap;
+        String memoryBudget = options.memoryBudget;
         long estimate;
         try {
             estimate = Math.addExact(Math.addExact(Math.multiplyExact(
@@ -100,7 +108,7 @@ public final class BenchmarkCli implements Callable<Integer> {
                     "Conservative process estimate " + totalEstimate + " exceeds effective total RSS budget " + budget);
         Path nativeDirectory;
         String configuredTemp = System.getProperty("java.io.tmpdir");
-        if (configuredTemp != null && !configuredTemp.equals("/tmp") && !configuredTemp.equals("/var/tmp"))
+        if (configuredTemp != null && !forbiddenTemp(Path.of(configuredTemp).toAbsolutePath().normalize()))
             nativeDirectory = Path.of(configuredTemp).toAbsolutePath().normalize();
         else nativeDirectory = directory.resolve("native");
         Files.createDirectories(nativeDirectory);
@@ -143,6 +151,8 @@ public final class BenchmarkCli implements Callable<Integer> {
             String exitKind = childExitKind(directory);
             result = failure(engine, scenario, runId, supervisorError == null ? exitKind : supervisorError,
                     "Child produced no complete result. Inspect stdout.log and stderr.log.");
+            String tail = childLogTail(directory);
+            result.put("childLogTail", tail.length() > 2_000 ? tail.substring(tail.length() - 2_000) : tail);
         }
         if (supervisorError != null || process.isAlive() || process.exitValue() != 0 && "OK".equals(result.get("status"))) {
             result.put("status", "FAILED"); result.put("valid", false);
@@ -160,7 +170,19 @@ public final class BenchmarkCli implements Callable<Integer> {
         return result;
     }
 
-    private static String childExitKind(Path directory) {
+    static String childExitKind(Path directory) {
+        String tail = childLogTail(directory).toLowerCase(java.util.Locale.ROOT);
+        if (tail.contains("outofmemoryerror") || tail.contains("out of memory")) return "OOM";
+        if (tail.contains("native memory allocation") || tail.contains("could not reserve enough space")
+                || tail.contains("unable to allocate native memory")) return "NATIVE_ALLOCATION";
+        if (tail.contains("fatal error has been detected by the java runtime")
+                || tail.contains("sigsegv") || tail.contains("sigbus") || tail.contains("sigabrt")
+                || tail.contains("exception_access_violation")) return "JVM_CRASH";
+        return "CHILD_EXIT";
+    }
+
+    private static String childLogTail(Path directory) {
+        var text = new StringBuilder();
         for (String filename : List.of("stdout.log", "stderr.log")) {
             try (var channel = java.nio.channels.FileChannel.open(directory.resolve(filename))) {
                 long size = channel.size();
@@ -168,11 +190,10 @@ public final class BenchmarkCli implements Callable<Integer> {
                 var buffer = java.nio.ByteBuffer.allocate((int) Math.min(size, 65_536));
                 channel.read(buffer);
                 buffer.flip();
-                String tail = StandardCharsets.UTF_8.decode(buffer).toString().toLowerCase(java.util.Locale.ROOT);
-                if (tail.contains("outofmemoryerror") || tail.contains("out of memory")) return "OOM";
+                text.append(filename).append(":\n").append(StandardCharsets.UTF_8.decode(buffer)).append('\n');
             } catch (IOException ignored) {}
         }
-        return "CHILD_EXIT";
+        return text.toString();
     }
 
     static long effectiveBudget(long requested) {
@@ -212,9 +233,19 @@ public final class BenchmarkCli implements Callable<Integer> {
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.add("-Xmx" + BenchmarkOptions.memoryBytes(heap));
         command.add("-XX:+ExitOnOutOfMemoryError");
+        command.add("-Duser.timezone=UTC");
         command.add("-Djava.io.tmpdir=" + nativeDirectory);
-        command.add("-Dorg.sqlite.tmpdir=" + nativeDirectory);
+        String sqliteTemp = System.getProperty("org.sqlite.tmpdir");
+        Path sqliteTempPath = sqliteTemp == null ? nativeDirectory : Path.of(sqliteTemp).toAbsolutePath().normalize();
+        if (forbiddenTemp(sqliteTempPath)) sqliteTempPath = nativeDirectory;
+        command.add("-Dorg.sqlite.tmpdir=" + sqliteTempPath);
+        for (String key : List.of("org.sqlite.lib.path", "org.sqlite.lib.name", "java.library.path")) {
+            String value = System.getProperty(key);
+            if (value != null) command.add("-D" + key + "=" + value);
+        }
         command.add("-Dembeddedbench.db.dir=" + directory.resolve("database"));
+        if (gitCommit != null) command.add("-Dembeddedbench.gitCommit=" + gitCommit);
+        if (gitDirty != null) command.add("-Dembeddedbench.gitDirty=" + gitDirty);
         command.add("-cp");
         command.add(Arrays.stream(System.getProperty("java.class.path").split(java.util.regex.Pattern.quote(File.pathSeparator)))
                 .map(path -> Path.of(path).toAbsolutePath().normalize().toString())
@@ -235,6 +266,10 @@ public final class BenchmarkCli implements Callable<Integer> {
         add(command, "--load-mode", options.loadMode); add(command, "--child-deadline", options.childDeadline);
         add(command, "--output", directory);
         return command;
+    }
+
+    private static boolean forbiddenTemp(Path path) {
+        return path.startsWith(Path.of("/tmp")) || path.startsWith(Path.of("/var/tmp"));
     }
 
     private static void add(List<String> command, String key, Object value) {

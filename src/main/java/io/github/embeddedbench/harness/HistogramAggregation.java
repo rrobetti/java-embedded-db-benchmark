@@ -26,6 +26,7 @@ final class HistogramAggregation {
             Map<?, ?> measurement = (Map<?, ?>) result.get("measurement");
             group.successes += ((Number) measurement.get("successes")).longValue();
             group.seconds += ((Number) measurement.get("elapsedSeconds")).doubleValue();
+            group.rates.add(((Number) measurement.get("throughputOpsPerSecond")).doubleValue());
             Map<?, ?> categories = (Map<?, ?>) measurement.get("latency");
             Path artifacts = directory.resolve(result.get("artifactDirectory").toString()).normalize();
             if (!artifacts.startsWith(directory)) throw new IOException("Histogram path escapes output directory");
@@ -56,6 +57,14 @@ final class HistogramAggregation {
             result.put("sourceRunIds", group.sources); result.put("successes", group.successes);
             result.put("elapsedSeconds", group.seconds);
             result.put("throughputOpsPerSecond", group.seconds == 0 ? null : group.successes / group.seconds);
+            double mean = group.rates.stream().mapToDouble(Double::doubleValue).average().orElseThrow();
+            double variance = group.rates.stream().mapToDouble(rate -> (rate - mean) * (rate - mean)).average().orElseThrow();
+            var variability = new LinkedHashMap<String, Object>();
+            variability.put("runThroughputsOpsPerSecond", group.rates);
+            variability.put("min", group.rates.stream().mapToDouble(Double::doubleValue).min().orElseThrow());
+            variability.put("max", group.rates.stream().mapToDouble(Double::doubleValue).max().orElseThrow());
+            variability.put("mean", mean); variability.put("populationStdDev", Math.sqrt(variance));
+            result.put("throughputRunToRunVariability", variability);
             var latency = new LinkedHashMap<String, Object>();
             for (var entry : group.histograms.entrySet()) {
                 var stats = new LinkedHashMap<String, Object>(Measurements.histogramStats(entry.getValue()));
@@ -84,6 +93,7 @@ final class HistogramAggregation {
         final List<String> sources = new ArrayList<>();
         final Map<String, Histogram> histograms = new LinkedHashMap<>();
         final Map<String, Long> units = new LinkedHashMap<>();
+        final List<Double> rates = new ArrayList<>();
         long successes;
         double seconds;
         Group(Map<String, Object> first) { this.first = first; }

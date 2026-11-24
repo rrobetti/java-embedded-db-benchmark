@@ -5,6 +5,16 @@ PGlite4j. Each measured engine/workload runs in a fresh JVM. There is no
 required PostgreSQL server, Docker, Node.js or system Maven installation.
 This is a benchmark harness, not a precomputed leaderboard.
 
+**PGlite transport deviation:** the working PGlite adapter runs real
+PGlite4j 0.0.3 WASM through a repository-local framed loopback bridge and
+pgjdbc 42.7.15. It is **not the unmodified PGlite4j JDBC driver** or its
+`jdbc:pglite:memory:benchmark` path. See
+[database configuration](docs/database-configuration.md) before comparing
+these results to upstream PGlite4j.
+An explicit `--databases pglite --db-profile upstream --load-mode prepared`
+selects the original named URL/driver path instead; its batching and
+SQL-error recovery limitations remain visible, not silently repaired.
+
 ## Start
 
 Install a **JDK 21** manually and set `JAVA_HOME` to it. Other Java major
@@ -39,18 +49,18 @@ dependencies must already be cached. PowerShell setup uses `-Offline`.
 
 ## Profiles and controls
 
-The default `quick` uses 10,000 rows, 128-byte payloads, one worker/connection,
+The default `quick` uses 1,000 rows, 128-byte payloads, one worker/connection,
 one second warmup and two seconds measurement per selected combination.
 It is intentionally small; it is **not** a meaningful production ranking.
-Quick/smoke child defaults are 256m heap/768m budget for H2/HSQLDB/SQLite
-and 768m heap/2g budget for PGlite's Java WASM runtime. Explicit heap/budget
-options override these adaptations; an undersized PGlite heap can fail during
-initialization. The script's supervisor heap defaults to 512m.
+All engines use the same default 768m child heap/2g budget for a fair resource
+ceiling. Explicit heap/budget options override these values; an undersized
+PGlite heap can fail during initialization. The script's supervisor heap
+defaults to 512m.
 
 | Profile | Rows | Warmup seconds | Measurement seconds | Fresh-JVM iterations |
 |---|---:|---:|---:|---:|
 | smoke | 100 | 0 | 0.2 | 1 |
-| quick | 10,000 | 1 | 2 | 1 |
+| quick | 1,000 | 1 | 2 | 1 |
 | standard | 100,000 | 30 | 120 | 5 |
 | full | 1,000,000 | 30 | 120 | 5 |
 | stress | 2,000,000 | 30 | 120 | 1 |
@@ -75,7 +85,9 @@ binary suffixes. `--iterations` means independent fresh-JVM repetitions and must
 duration-only, while positive values bound attempts per phase.
 `--threads 1,4,8` runs a concurrency grid; omit `--connections` to match each
 worker count, or set a connection count no larger than the smallest grid value.
-Connections cannot exceed workers. Do not assume every connection policy or
+Connections cannot exceed workers. `auto` uses a bounded pool when fewer
+connections than workers are requested; `dedicated` requires equal counts.
+Do not assume every connection policy or
 workload is equally suitable for all engines.
 
 ## Results and safety
@@ -84,7 +96,8 @@ The output directory contains `report.json`, `report.csv`, `report.md`,
 `report.html` and per-run artifacts/logs. Failed or incorrect runs remain
 visible and cause a nonzero exit; do not rank invalid results.
 Memory budgets are **watchdog limits, not OS-enforced reservations**.
-JVM `-Xmx` does not cap native/WASM memory. See
+JVM `-Xmx` caps Java heap, including Chicory WASM memory, not total RSS or
+SQLite's native allocations. See
 [limitations](docs/limitations.md) before increasing profiles or concurrency.
 
 Native extraction failures: set `BENCHMARK_NATIVE_TMP` to a user-owned,

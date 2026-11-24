@@ -15,6 +15,15 @@ import java.util.concurrent.locks.LockSupport;
 
 final class PhaseRunner {
     record Result(Measurements measurements, double elapsedSeconds, double offeredSeconds) {}
+    static final class Failure extends java.sql.SQLException {
+        private final Result partial;
+        Failure(Throwable cause, Result partial) {
+            super(cause.getMessage(), cause instanceof java.sql.SQLException sql ? sql.getSQLState() : null,
+                    cause instanceof java.sql.SQLException sql ? sql.getErrorCode() : 0, cause);
+            this.partial = partial;
+        }
+        Result partial() { return partial; }
+    }
     private record Request(long scheduledNanos) {}
     private PhaseRunner() {}
 
@@ -24,6 +33,9 @@ final class PhaseRunner {
         if (seconds == 0) return new Result(measurements, 0, 0);
         long durationNanos = (long) (seconds * 1_000_000_000L);
         var queue = new ArrayBlockingQueue<Request>(options.queueCapacity);
+        boolean pooled = !serialized && (options.connectionMode.equals("pooled") || connections.size() < workers);
+        var connectionPool = new ArrayBlockingQueue<Connection>(Math.max(1, connections.size()));
+        if (pooled) connectionPool.addAll(connections);
         var ready = new CountDownLatch(workers);
         var start = new CountDownLatch(1);
         var finished = new CountDownLatch(workers);
@@ -32,12 +44,15 @@ final class PhaseRunner {
         var issued = new AtomicLong();
         var producerDone = new java.util.concurrent.atomic.AtomicBoolean();
         var threads = new ArrayList<Thread>();
+        var workerMeasurements = new ArrayList<Measurements>();
         Object sessionLock = new Object();
         for (int worker = 0; worker < workers; worker++) {
             int index = worker;
+            var localMeasurements = new Measurements();
+            workerMeasurements.add(localMeasurements);
             Thread thread = new Thread(() -> {
                 var random = new SplittableRandom(seed + 0x9e3779b97f4a7c15L * index);
-                Connection connection = connections.get(serialized ? 0 : index);
+                Connection dedicatedConnection = pooled ? null : connections.get(serialized ? 0 : index);
                 ready.countDown();
                 try {
                     start.await();
@@ -55,22 +70,25 @@ final class PhaseRunner {
                             if (options.maxOperations > 0 && !claim(issued, options.maxOperations)) break;
                             scheduled = System.nanoTime();
                         }
+                        Connection connection = pooled ? connectionPool.take() : dedicatedConnection;
                         try {
                             Workload.Operation operation;
                             if (serialized) {
                                 synchronized (sessionLock) { operation = workload.execute(connection, random); }
                             } else operation = workload.execute(connection, random);
-                            measurements.success(operation.category(), operation.units(), System.nanoTime() - scheduled);
+                            localMeasurements.success(operation.category(), operation.units(), System.nanoTime() - scheduled);
                         } catch (java.sql.SQLException | UnsupportedOperationException error) {
-                            measurements.failure(error);
+                            localMeasurements.failure(error);
                             if (List.of("UNSUPPORTED", "CORRECTNESS").contains(Measurements.classify(error))) {
                                 fatal.compareAndSet(null, error);
                                 break;
                             }
                         } catch (Throwable error) {
-                            measurements.failure(error);
+                            localMeasurements.failure(error);
                             fatal.compareAndSet(null, error);
                             break;
+                        } finally {
+                            if (pooled) connectionPool.add(connection);
                         }
                     }
                 } catch (InterruptedException error) {
@@ -112,15 +130,13 @@ final class PhaseRunner {
             for (Thread thread : threads) thread.interrupt();
             throw new java.sql.SQLTimeoutException("Workers exceeded phase drain deadline");
         }
-        Throwable failure = fatal.get();
-        if (failure != null) {
-            if (failure instanceof Exception exception) throw exception;
-            if (failure instanceof Error error) throw error;
-            throw new IllegalStateException(failure);
-        }
         long end = System.nanoTime();
-        return new Result(measurements, (end - begin) / 1_000_000_000.0,
+        for (Measurements local : workerMeasurements) measurements.merge(local);
+        Result result = new Result(measurements, (end - begin) / 1_000_000_000.0,
                 Math.max(0, Math.min(offerEnd, end) - begin) / 1_000_000_000.0);
+        Throwable failure = fatal.get();
+        if (failure != null) throw new Failure(failure, result);
+        return result;
     }
 
     private static boolean claim(AtomicLong issued, long maximum) {

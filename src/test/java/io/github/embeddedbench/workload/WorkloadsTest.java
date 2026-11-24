@@ -19,7 +19,7 @@ class WorkloadsTest {
             "relational", "cte", "mixed", "htap", "cache", "transactions", "rollback", "write",
             "insert", "update", "delete", "batch-update", "upsert", "cache-populate",
             "cache-invalidate", "cache-bulk-invalidate", "cache-refresh", "cache-incremental",
-            "cache-expire", "cache-replace", "contended-write", "contended-transactions", "long-transactions"})
+            "cache-expire", "cache-replace", "contended-write", "contended-transactions", "long-transactions", "deadlocks"})
     void realJdbcOperationsPreserveInvariants(String name) throws Exception {
         try (var db = DatabaseAdapters.create("h2", "default")) {
             db.initialize();
@@ -148,6 +148,7 @@ class WorkloadsTest {
         assertTrue(head > tail * 20);
         assertEquals(1, Workloads.zipf(a, 1));
         assertThrows(IllegalArgumentException.class, () -> Workloads.create("unknown", 10, 10, 99, 1, 1, 42));
+        assertThrows(IllegalArgumentException.class, () -> Workloads.create("deadlocks", 1, 10, 99, 1, 1, 42));
     }
 
     private long count(Connection c) throws SQLException {

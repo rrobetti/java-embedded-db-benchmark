@@ -4,14 +4,15 @@ $offline = $false
 $benchmarkArgs = @()
 $heap = '512m'
 for ($i = 0; $i -lt $args.Count; $i++) {
-    if ($args[$i] -eq '--offline') { $offline = $true; continue }
-    if ($args[$i] -eq '--jvm-heap') {
+    $argument = $args[$i] -join ','
+    if ($argument -eq '--offline') { $offline = $true; continue }
+    if ($argument -eq '--jvm-heap') {
         if ($i + 1 -ge $args.Count) { throw '--jvm-heap needs a value.' }
-        $heap = $args[$i + 1]
-    } elseif ($args[$i] -like '--jvm-heap=*') {
-        $heap = $args[$i].Substring('--jvm-heap='.Length)
+        $heap = $args[$i + 1] -join ','
+    } elseif ($argument -like '--jvm-heap=*') {
+        $heap = $argument.Substring('--jvm-heap='.Length)
     }
-    $benchmarkArgs += $args[$i]
+    $benchmarkArgs += $argument
 }
 if ($heap -notmatch '^[1-9][0-9]*[kKmMgG]?$') { throw "Invalid JVM heap: $heap" }
 if ($env:JAVA_HOME) { $env:PATH = "$(Join-Path $env:JAVA_HOME 'bin')$([IO.Path]::PathSeparator)$env:PATH" }
@@ -41,5 +42,5 @@ $nativeTmp = (Resolve-Path $nativeTmp).Path
 $probe = Join-Path $nativeTmp "permission-probe-$PID"
 try { [IO.File]::WriteAllText($probe, 'probe') } finally { if (Test-Path $probe) { Remove-Item $probe } }
 if ($benchmarkArgs.Count -eq 0) { $benchmarkArgs = @('--profile', 'quick') }
-& java "-Xmx$heap" "-Djava.io.tmpdir=$nativeTmp" -jar target/benchmark.jar @benchmarkArgs
+& java "-Xmx$heap" "-Djava.io.tmpdir=$nativeTmp" "-Dorg.sqlite.tmpdir=$nativeTmp" -jar target/benchmark.jar @benchmarkArgs
 exit $LASTEXITCODE

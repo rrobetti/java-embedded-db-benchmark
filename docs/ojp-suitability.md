@@ -10,11 +10,15 @@ and describes it as a testing/demo driver. Treat that as an upstream
 support boundary, not a performance finding. Its optional zip persistence
 is periodic snapshotting, not a durable PostgreSQL storage path; this
 benchmark uses its memory URL.
+The working benchmark uses a repository-local framing repair over that real
+WASM runtime, not upstream's unmodified JDBC transport. That additional
+integration/support surface must be considered for OJP; successful framed
+results do not certify the original upstream driver.
 
 | Candidate | Evidence to evaluate | Important boundary |
 |---|---|---|
 | H2 | Point/mixed latency, concurrent transaction correctness, Java deployment, XA tests | Embedded memory results do not establish server/proxy recovery |
-| HSQLDB | Default locking versus explicit MVCC, contention and XA tests | Transaction-control mode changes the experiment |
+| HSQLDB | Primary MVCC versus optional `locks`, contention and XA tests | Transaction-control mode changes the experiment |
 | SQLite | JNI provisioning, single-writer contention, SQL affinity correctness | Local transactions are not XA; dedicated connections do not create parallel writers |
 | PGlite4j | PostgreSQL SQL compatibility exercised here, WASM heap/cost, effective serialization | An internal loopback bridge is not an independent production PostgreSQL server or proven OJP/XA integration |
 

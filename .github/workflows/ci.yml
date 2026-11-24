@@ -46,7 +46,7 @@ jobs:
         shell: bash
         run: |
           bash scripts/benchmark.sh --offline --profile smoke \
-            --databases h2,hsqldb,sqlite,pglite --workloads point \
+            --databases h2,hsqldb,sqlite,pglite --workloads point,range,indexed-range \
             --rows 100 --warmup 0 --duration 0.2 --iterations 1 --max-operations 100 \
             --threads 1 --connections 1 --memory-budget 2048m --jvm-heap 768m \
             --child-deadline 120 --output benchmark-results/ci
@@ -55,7 +55,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/benchmark.ps1 --offline --profile smoke `
-            --databases h2,hsqldb,sqlite,pglite --workloads point `
+            --databases 'h2,hsqldb,sqlite,pglite' --workloads 'point,range,indexed-range' `
             --rows 100 --warmup 0 --duration 0.2 --iterations 1 --max-operations 100 `
             --threads 1 --connections 1 --memory-budget 2048m --jvm-heap 768m `
             --child-deadline 120 --output benchmark-results/ci
@@ -72,18 +72,21 @@ jobs:
               assert path.is_file() and path.stat().st_size > 0, path
           report = json.loads((root / "report.json").read_text(encoding="utf-8"))
           runs = report["results"]
-          assert len(runs) == 4, f"Expected four runs, got {len(runs)}"
-          assert {run["engine"] for run in runs} == {"h2", "hsqldb", "sqlite", "pglite"}
+          expected = {(engine, workload) for engine in ("h2", "hsqldb", "sqlite", "pglite") for workload in ("point", "range", "indexed-range")}
+          assert len(runs) == len(expected), f"Expected twelve runs, got {len(runs)}"
+          assert {(run["engine"], run["scenario"]) for run in runs} == expected
           for run in runs:
               assert run["status"] == "OK" and run["valid"] is True, run
               assert run["datasetValid"] is True and run["workloadValid"] is True, run
               measurement = run["measurement"]
               assert measurement["successes"] > 0, run
               assert measurement["failures"] == 0 and measurement["rejected"] == 0, run
+              if run["engine"] == "pglite":
+                  assert "ADAPTER TRANSPORT DEVIATION" in run["capabilities"]["limitations"], run
               artifacts = root / run["artifactDirectory"]
               assert (artifacts / "result.json").is_file(), artifacts
               assert any(artifacts.glob("latency-*.hgr")), artifacts
-          print("Validated four real, correct, nonempty benchmark results.")
+          print("Validated twelve real, correct, nonempty benchmark results.")
           PY
       - name: Upload reports and test evidence
         if: always()

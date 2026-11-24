@@ -1,10 +1,10 @@
 package io.github.embeddedbench.db;
 
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.DriverManager;
 import java.util.Set;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,13 +21,19 @@ public final class PgLiteDatabaseAdapter extends AbstractDatabaseAdapter {
     private final Set<Connection> leases = ConcurrentHashMap.newKeySet();
     private Connection physical;
     private String engineVersion;
+    private String jdbcDriverVersion = "not initialized";
+    private PgLiteWireBridge bridge;
+    private final boolean upstream;
 
     public PgLiteDatabaseAdapter() {
         this("default");
     }
 
     public PgLiteDatabaseAdapter(String profile) {
-        requireDefaultProfile(profile);
+        if (!"default".equals(profile) && !"framed".equals(profile) && !"upstream".equals(profile)) {
+            throw new IllegalArgumentException("PGlite profile must be default, framed or upstream: " + profile);
+        }
+        upstream = "upstream".equals(profile);
     }
 
     @Override
@@ -37,7 +43,10 @@ public final class PgLiteDatabaseAdapter extends AbstractDatabaseAdapter {
 
     @Override
     String jdbcUrl() {
-        return "jdbc:pglite:memory:benchmark";
+        if (upstream) {
+            return "jdbc:pglite:memory:benchmark";
+        }
+        return bridge == null ? "jdbc:postgresql://127.0.0.1:<ephemeral>/postgres" : bridge.jdbcUrl();
     }
 
     @Override
@@ -58,16 +67,40 @@ public final class PgLiteDatabaseAdapter extends AbstractDatabaseAdapter {
     @Override
     Properties connectionProperties() {
         Properties properties = super.connectionProperties();
-        // The 0.0.3 bridge does not correctly clear unnamed extended-query
-        // portals after SQL errors; simple protocol preserves transaction recovery.
         properties.setProperty("preferQueryMode", "simple");
+        properties.setProperty("sslmode", "disable");
+        properties.setProperty("gssEncMode", "disable");
+        properties.setProperty("prepareThreshold", "0");
+        properties.setProperty("connectTimeout", "30");
         return properties;
     }
 
     @Override
     synchronized Connection connect() throws SQLException {
-        if (physical == null || physical.isClosed()) {
-            physical = super.connect();
+        if (physical != null && physical.isClosed()) {
+            throw new SQLException("PGlite physical session was lost; close and explicitly reinitialize the adapter", "08003");
+        }
+        if (physical == null) {
+            if (upstream) {
+                physical = DriverManager.getConnection(jdbcUrl(), connectionProperties());
+            } else {
+                bridge = new PgLiteWireBridge();
+                try {
+                    physical = DriverManager.getConnection(bridge.jdbcUrl(), connectionProperties());
+                } catch (SQLException | RuntimeException exception) {
+                    if (bridge.failure() != null && bridge.failure() != exception) {
+                        exception.addSuppressed(bridge.failure());
+                    }
+                    try {
+                        bridge.close();
+                    } catch (SQLException | RuntimeException cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    } finally {
+                        bridge = null;
+                    }
+                    throw exception;
+                }
+            }
         }
         return physical;
     }
@@ -75,6 +108,7 @@ public final class PgLiteDatabaseAdapter extends AbstractDatabaseAdapter {
     @Override
     void afterInitialize(Connection connection) throws SQLException {
         engineVersion = connection.getMetaData().getDatabaseProductVersion();
+        jdbcDriverVersion = connection.getMetaData().getDriverVersion();
     }
 
     @Override
@@ -164,14 +198,18 @@ public final class PgLiteDatabaseAdapter extends AbstractDatabaseAdapter {
             engineVersion = null;
         }
         try {
-            // Version 0.0.3 exposes eviction only at package scope. Closing JDBC
-            // sockets alone does not stop its wire listener or release WASM memory.
-            Class<?> driver = Class.forName("io.roastedroot.pglite4j.jdbc.PgLiteDriver");
-            Method shutdown = driver.getDeclaredMethod("closeAndEvict", String.class);
-            shutdown.setAccessible(true);
-            shutdown.invoke(null, jdbcUrl().substring("jdbc:pglite:".length()));
-        } catch (ReflectiveOperationException | RuntimeException exception) {
-            SQLException shutdownFailure = new SQLException("Unable to release PGlite 0.0.3 managed instance", exception);
+            if (bridge != null) {
+                bridge.close();
+                bridge = null;
+            }
+            if (upstream) {
+                Class<?> driver = Class.forName("io.roastedroot.pglite4j.jdbc.PgLiteDriver");
+                var evict = driver.getDeclaredMethod("closeAndEvict", String.class);
+                evict.setAccessible(true);
+                evict.invoke(null, "memory:benchmark");
+            }
+        } catch (SQLException | ReflectiveOperationException | RuntimeException exception) {
+            SQLException shutdownFailure = new SQLException("Unable to release PGlite 0.0.3 WASM bridge", exception);
             if (failure == null) {
                 failure = shutdownFailure;
             } else {
@@ -185,9 +223,17 @@ public final class PgLiteDatabaseAdapter extends AbstractDatabaseAdapter {
 
     @Override
     public Capabilities capabilities() {
+        String transport = upstream
+                ? "UNMODIFIED UPSTREAM pglite4j-jdbc 0.0.3 driver via " + jdbcUrl()
+                + "; pgjdbc " + jdbcDriverVersion
+                + ". Batched protocol pipelines are unsafe in upstream arbitrary-socket-read framing; "
+                + "use prepared/individual ingestion. "
+                : "ADAPTER TRANSPORT DEVIATION: pglite4j 0.0.3 core WASM via a local exact-frame bridge and pgjdbc; "
+                + "NOT the unmodified pglite4j-jdbc driver or jdbc:pglite:memory:benchmark URL. Actual URL: "
+                + jdbcUrl() + "; pgjdbc " + jdbcDriverVersion + ". ";
         return new Capabilities(false, false, false, false, true, "serialized-shared-session",
-                "PGlite4j 0.0.3 uses one WASM PostgreSQL session behind a loopback JDBC wire bridge. "
+                transport
                         + "One physical connection, serialized logical leases; no independent sessions or XA. "
-                        + "Rollback-to-savepoint leaves an active unnamed portal; a full rollback is required.");
+                        + "Upstream 0.0.3 WASM SQL-error cleanup leaves an active portal; restart the instance after SQL errors.");
     }
 }

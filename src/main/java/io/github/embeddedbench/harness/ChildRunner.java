@@ -6,6 +6,7 @@ import io.github.embeddedbench.db.DeterministicDataset;
 import io.github.embeddedbench.db.XaProbe;
 import io.github.embeddedbench.workload.Workload;
 import io.github.embeddedbench.workload.Workloads;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,6 +38,14 @@ final class ChildRunner {
         result.put("stages", stages);
         var timings = new LinkedHashMap<String, Object>();
         result.put("initializationNanos", timings);
+        result.put("initializationTimingSemantics", Map.of(
+                "driverInitialization", "Actual Class.forName driver initialization; excludes database creation",
+                "adapterCreation", "DatabaseAdapters factory object construction only",
+                "driverAndAdapter", "Combined driver initialization and adapter construction interval",
+                "databaseStartAndAnchorConnection", "Database boot, anchor JDBC connection, and engine XA probes; inseparable composite",
+                "databaseStart", "Alias of databaseStartAndAnchorConnection",
+                "firstWorkerConnection", "First harness-owned worker connection; anchor/version connections opened earlier",
+                "firstConnection", "Alias of firstWorkerConnection; not the first chronological JDBC connection"));
         stages.put("baseline", Resources.snapshot(databaseDirectory));
         DatabaseAdapter adapter = null;
         Workload workload = null;
@@ -44,11 +53,18 @@ final class ChildRunner {
         Throwable failure = null;
         try {
             long time = System.nanoTime();
+            long driverStart = time;
+            DatabaseAdapters.initializeDriver(options.engines.getFirst());
+            timings.put("driverInitialization", System.nanoTime() - time);
+            time = System.nanoTime();
             adapter = DatabaseAdapters.create(options.engines.getFirst(), options.dbProfile);
-            timings.put("driverAndAdapter", System.nanoTime() - time);
+            timings.put("adapterCreation", System.nanoTime() - time);
+            timings.put("driverAndAdapter", System.nanoTime() - driverStart);
             time = System.nanoTime();
             adapter.initialize();
-            timings.put("databaseStart", System.nanoTime() - time);
+            long boot = System.nanoTime() - time;
+            timings.put("databaseStartAndAnchorConnection", boot);
+            timings.put("databaseStart", boot);
             stages.put("init", Resources.snapshot(databaseDirectory));
             var xa = XaProbe.result(adapter);
             var xaResult = new LinkedHashMap<String, Object>();
@@ -66,13 +82,26 @@ final class ChildRunner {
             compatibility.put("executionMode", capabilities.executionMode());
             compatibility.put("limitations", capabilities.limitations());
             result.put("capabilities", compatibility);
+            result.put("transportDeviation", capabilities.limitations().contains("ADAPTER TRANSPORT DEVIATION"));
+            if (options.engines.getFirst().equals("pglite"))
+                result.put("requestedJdbcUrl", "jdbc:pglite:memory:benchmark");
             boolean serialized = options.connectionMode.equals("serialized") || !capabilities.independentTransactions();
             if (options.connectionMode.equals("dedicated") && !capabilities.independentTransactions())
                 throw new UnsupportedOperationException("Engine does not expose independent JDBC transactions; use auto/serialized");
-            result.put("effectiveConnectionMode", serialized ? "serialized-single-session" : "dedicated");
+            boolean pooled = !serialized && (options.connectionMode.equals("pooled") || options.connections < options.threads);
+            result.put("effectiveConnectionMode", serialized ? "serialized-single-session" : pooled ? "bounded-pool" : "dedicated");
             result.put("effectiveConnections", serialized ? 1 : options.connections);
-            int workers = serialized ? options.threads : options.connections;
+            int workers = options.threads;
             result.put("effectiveWorkers", workers);
+            if (options.scenarios.getFirst().equals("deadlocks")) {
+                boolean feasible = options.rows >= 2 && workers >= 2 && !serialized && options.connections >= 2
+                        && capabilities.independentTransactions() && capabilities.concurrentWriters();
+                result.put("scenarioFeasible", feasible);
+                result.put("scenarioExecutionNote", feasible
+                        ? "Induced opposite account lock order with intentional hold; zero observed deadlocks is not proof of stability."
+                        : "Genuine concurrent-writer deadlocks require rows>=2, workers>=2, independent connections>=2, and concurrent writer capability.");
+                if (!feasible) throw new java.sql.SQLFeatureNotSupportedException("Deadlock scenario unavailable for this execution topology");
+            }
             result.put("latencySemantics", options.requestRate > 0
                     ? "Scheduled arrival to completion, including scheduler lateness, queueing and session contention; rejected requests excluded."
                     : "Worker submission to completion, including serialized session contention; successes only.");
@@ -82,7 +111,13 @@ final class ChildRunner {
             time = System.nanoTime();
             Connection setup = adapter.openConnection();
             connections.add(setup);
-            timings.put("firstConnection", System.nanoTime() - time);
+            long firstWorkerConnection = System.nanoTime() - time;
+            timings.put("firstWorkerConnection", firstWorkerConnection);
+            timings.put("firstConnection", firstWorkerConnection);
+            var metadata = setup.getMetaData();
+            result.put("jdbcUrl", metadata.getURL());
+            result.put("driverName", metadata.getDriverName());
+            result.put("driverVersion", metadata.getDriverVersion());
             time = System.nanoTime();
             adapter.createSchema(setup);
             timings.put("schema", System.nanoTime() - time);
@@ -103,10 +138,8 @@ final class ChildRunner {
             workload.prepare(setup);
             int actualConnections = serialized ? 1 : options.connections;
             for (int i = 1; i < actualConnections; i++) connections.add(adapter.openConnection());
-            var warmup = PhaseRunner.run(workload, connections, workers, serialized, options, options.warmup,
-                    options.seed ^ 0x123456789abcdefL);
-            result.put("warmup", warmup.measurements().report(warmup.elapsedSeconds(), warmup.offeredSeconds()));
-            warmup.measurements().save(directory, "warmup-latency", warmup.elapsedSeconds());
+            executePhase(workload, connections, workers, serialized, options, options.warmup,
+                    options.seed ^ 0x123456789abcdefL, "warmup", "warmup-latency", result);
             if (options.warmup > 0) {
                 workload.validate(setup);
                 result.put("warmupValid", true);
@@ -127,12 +160,13 @@ final class ChildRunner {
             }
             Map<String, Object> measuredBaseline = Resources.snapshot(databaseDirectory);
             stages.put("measurementBaseline", measuredBaseline);
-            var steady = PhaseRunner.run(workload, connections, workers, serialized, options, options.duration, options.seed);
-            result.put("measurement", steady.measurements().report(steady.elapsedSeconds(), steady.offeredSeconds()));
-            steady.measurements().save(directory, "latency", steady.elapsedSeconds());
+            var steady = executePhase(workload, connections, workers, serialized, options, options.duration, options.seed,
+                    "measurement", "latency", result);
             Map<String, Object> steadyResources = Resources.snapshot(databaseDirectory);
             stages.put("steady", steadyResources);
             result.put("resourceDeltas", deltas(measuredBaseline, steadyResources, steady.elapsedSeconds()));
+            result.put("measurement", steady.measurements().report(steady.elapsedSeconds(), steady.offeredSeconds()));
+            steady.measurements().save(directory, "latency", steady.elapsedSeconds());
             var normalized = new LinkedHashMap<String, Object>();
             double throughput = ((Number) ((Map<?, ?>) result.get("measurement")).get("throughputOpsPerSecond")).doubleValue();
             long logicalBytes = DeterministicDataset.logicalBytes(options.rows, options.payload);
@@ -156,6 +190,7 @@ final class ChildRunner {
             result.put("deleteNanos", System.nanoTime() - time);
             stages.put("delete", Resources.snapshot(databaseDirectory));
         } catch (Throwable error) {
+            LoggerFactory.getLogger(ChildRunner.class).error("Child {} failed outside the measurement window", options.runId, error);
             failure = error;
             result.put("errorClass", Measurements.classify(error));
             result.put("error", Measurements.describe(error));
@@ -184,6 +219,27 @@ final class ChildRunner {
         result.put("shutdownError", Measurements.describe(error));
         if (failure != null) failure.addSuppressed(error);
         return failure == null ? error : failure;
+    }
+
+    private static PhaseRunner.Result executePhase(Workload workload, java.util.List<Connection> connections, int workers,
+            boolean serialized, BenchmarkOptions options, double seconds, long seed, String key, String prefix,
+            Map<String, Object> result) throws Exception {
+        try {
+            var phase = PhaseRunner.run(workload, connections, workers, serialized, options, seconds, seed);
+            if (key.equals("warmup")) {
+                result.put(key, phase.measurements().report(phase.elapsedSeconds(), phase.offeredSeconds()));
+                phase.measurements().save(options.output, prefix, phase.elapsedSeconds());
+            }
+            return phase;
+        } catch (PhaseRunner.Failure error) {
+            var phase = error.partial();
+            result.put(key, phase.measurements().report(phase.elapsedSeconds(), phase.offeredSeconds()));
+            phase.measurements().save(options.output, prefix, phase.elapsedSeconds());
+            Throwable cause = error.getCause();
+            if (cause instanceof Exception exception) throw exception;
+            if (cause instanceof Error fatal) throw fatal;
+            throw error;
+        }
     }
 
     private static Map<String, Object> deltas(Map<String, Object> baseline, Map<String, Object> steady, double seconds) {

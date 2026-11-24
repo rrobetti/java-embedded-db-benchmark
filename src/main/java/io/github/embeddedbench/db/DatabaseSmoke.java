@@ -22,6 +22,7 @@ public final class DatabaseSmoke {
     public static List<Result> smoke(List<String> databases) throws SQLException {
         List<Result> results = new ArrayList<>();
         for (String database : databases) {
+            DatabaseAdapters.initializeDriver(database);
             try (DatabaseAdapter adapter = DatabaseAdapters.create(database, "default")) {
                 adapter.initialize();
                 String version = adapter.version();

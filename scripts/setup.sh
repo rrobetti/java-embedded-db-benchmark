@@ -43,12 +43,30 @@ if command -v findmnt >/dev/null && findmnt -no OPTIONS -T "$native_tmp" | grep 
 fi
 [[ -f mvnw ]] || { echo "Maven wrapper is missing; restore mvnw and .mvn/wrapper." >&2; exit 1; }
 if "$offline"; then
+  distribution_url="$(sed -n 's/^distributionUrl=//p' .mvn/wrapper/maven-wrapper.properties | tr -d '[:space:]')"
+  [[ -n "$distribution_url" ]] || { echo "Missing wrapper distributionUrl." >&2; exit 1; }
+  if [[ -n "${MVNW_REPOURL:-}" ]]; then
+    distribution_url="$MVNW_REPOURL/org/apache/maven/${distribution_url#*/org/apache/maven/}"
+  fi
+  distribution_name="${distribution_url##*/}"
+  distribution_name="${distribution_name%.zip}"
+  distribution_name="${distribution_name%-bin}"
+  hash=0
+  for ((i=0; i<${#distribution_url}; i++)); do
+    printf -v char_code '%d' "'${distribution_url:i:1}"
+    hash=$(((hash * 31 + char_code) % 4294967296))
+  done
+  printf -v cache_key '%x' "$hash"
+  cached_maven="${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists/$distribution_name/$cache_key/bin/mvn"
+  [[ -x "$cached_maven" ]] || {
+    echo "Offline setup requires the pinned Maven distribution already cached. Run online setup first." >&2; exit 1;
+  }
   bash ./mvnw -B -o package
 else
   bash ./mvnw -B dependency:go-offline
   bash ./mvnw -B package
 fi
-if ! java "-Djava.io.tmpdir=$native_tmp" -cp target/benchmark.jar io.github.embeddedbench.db.DatabaseSmoke; then
+if ! java -Xmx1024m "-Djava.io.tmpdir=$native_tmp" "-Dorg.sqlite.tmpdir=$native_tmp" -cp target/benchmark.jar io.github.embeddedbench.db.DatabaseSmoke; then
   echo "Connectivity failed. Check the complete error above, JDK 21, OS/architecture support and native extraction permissions." >&2
   echo "For native loader failures set BENCHMARK_NATIVE_TMP to a user-owned writable executable filesystem; no elevated installation is performed." >&2
   exit 1

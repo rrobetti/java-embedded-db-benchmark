@@ -8,7 +8,11 @@ count and transaction size for comparison. Report engine-specific settings,
 serialization policies and capabilities rather than presenting them as
 equivalent internals.
 
-Loading and warmup are distinct from measurement. Startup and load costs
+Loading and warmup are distinct from measurement. Mutating warmup workloads
+are validated, closed, deleted/reloaded with the same seed and prepared
+again before measurement, so engines start from equivalent logical state.
+The reset cost is recorded but excluded from steady-state operation timing.
+Startup and load costs
 matter for ephemeral applications, but must not be confused with warmed
 operation throughput. Post-run correctness is mandatory; an incorrect
 operation is not a performance win.

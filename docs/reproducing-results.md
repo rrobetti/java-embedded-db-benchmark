@@ -22,6 +22,10 @@ bash scripts/benchmark.sh --offline --profile quick \
 On Windows use `pwsh -File scripts/benchmark.ps1` followed by the same options.
 For diagnostic isolation select one database/workload first, but do not
 publish it as an all-engine result.
+Keep PGlite `upstream` and default/framed-repair results separate. Record
+the profile, actual URL, driver/runtime versions and transport-deviation
+label. An upstream failure is evidence of that configuration's limitation,
+not permission to substitute the repair without relabeling the experiment.
 
 `--help` documents accepted values. `smoke` is a correctness/launch check;
 `standard`, `full`, `stress` and `endurance` require an explicit assessment

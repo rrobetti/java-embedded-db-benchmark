@@ -16,15 +16,13 @@ public final class BenchmarkOptions {
     @Option(names = {"--workloads", "--scenarios", "--scenario"}, split = ",", description = "Comma-separated workloads")
     List<String> scenarios = List.of("point", "mixed");
     @Option(names = "--db-profile", description = "Adapter durability/configuration profile") String dbProfile = "default";
-    @Option(names = "--connection-mode", description = "auto, dedicated, serialized") String connectionMode = "auto";
+    @Option(names = "--connection-mode", description = "auto, dedicated, pooled, serialized") String connectionMode = "auto";
     @Option(names = "--rows") Long rows;
     @Option(names = {"--payload", "--payload-size"}) Integer payload;
     @Option(names = "--threads", description = "Worker count or comma-separated grid (e.g. 1,4,8)") String threadSpec = "1";
     Integer threads;
     List<Integer> threadCounts;
     boolean connectionsDefault;
-    boolean heapDefault;
-    boolean budgetDefault;
     @Option(names = "--connections") Integer connections;
     @Option(names = {"--batch", "--batch-size"}) Integer batch;
     @Option(names = {"--transaction-size", "--transaction"}) Integer transactionSize;
@@ -52,7 +50,7 @@ public final class BenchmarkOptions {
         double defaultDuration;
         switch (profile.toLowerCase(Locale.ROOT)) {
             case "smoke" -> { defaultRows = 100; defaultDuration = 0.2; }
-            case "quick" -> { defaultRows = 10_000; defaultDuration = 2; }
+            case "quick" -> { defaultRows = 1_000; defaultDuration = 2; }
             case "standard" -> { defaultRows = 100_000; defaultDuration = 120; }
             case "full" -> { defaultRows = 1_000_000; defaultDuration = 120; }
             case "stress" -> { defaultRows = 2_000_000; defaultDuration = 120; }
@@ -71,10 +69,8 @@ public final class BenchmarkOptions {
                 : profile.equalsIgnoreCase("quick") ? 1 : 30) : warmup;
         duration = duration == null ? defaultDuration : duration;
         repetitions = repetitions == null ? (List.of("standard", "full").contains(profile.toLowerCase(Locale.ROOT)) ? 5 : 1) : repetitions;
-        heapDefault = jvmHeap == null;
-        budgetDefault = memoryBudget == null;
-        jvmHeap = jvmHeap == null ? (defaultRows >= 1_000_000 ? "512m" : "256m") : jvmHeap;
-        memoryBudget = memoryBudget == null ? (defaultRows >= 1_000_000 ? "2g" : "768m") : memoryBudget;
+        jvmHeap = jvmHeap == null ? "768m" : jvmHeap;
+        memoryBudget = memoryBudget == null ? "2g" : memoryBudget;
         childDeadline = childDeadline == null ? Math.max(120, (long) Math.ceil(warmup + duration) + 120) : childDeadline;
         output = output.toAbsolutePath().normalize();
         if (rows < 1 || payload < 1 || threads < 1 || connections < 1 || connections > threads || batch < 1
@@ -84,8 +80,10 @@ public final class BenchmarkOptions {
                 || childDeadline < 1 || rangeRows < 1 || readPercent < 0 || readPercent > 100
                 || analyticalPercent < 0 || analyticalPercent > 100 || duration > 14_400 || warmup > 14_400)
             throw new IllegalArgumentException("Invalid benchmark bounds/percentages; connections must not exceed threads");
-        if (!List.of("auto", "dedicated", "serialized").contains(connectionMode))
-            throw new IllegalArgumentException("connection-mode must be auto, dedicated or serialized");
+        if (!List.of("auto", "dedicated", "pooled", "serialized").contains(connectionMode))
+            throw new IllegalArgumentException("connection-mode must be auto, dedicated, pooled or serialized");
+        if (connectionMode.equals("dedicated") && threadCounts.stream().anyMatch(n -> connections != n && !connectionsDefault))
+            throw new IllegalArgumentException("Dedicated mode requires connections equal to threads; use auto/pooled");
         if (!List.of("batch", "prepared", "individual").contains(loadMode))
             throw new IllegalArgumentException("load-mode must be batch, prepared or individual");
         if (engines.isEmpty() || scenarios.isEmpty()) throw new IllegalArgumentException("Select engines and scenarios");
@@ -128,8 +126,6 @@ public final class BenchmarkOptions {
         m.put("maxOperations", maxOperations); m.put("threadGrid", threadCounts);
         m.put("seed", seed); m.put("memoryBudgetBytes", memoryBytes(memoryBudget));
         m.put("jvmHeapBytes", memoryBytes(jvmHeap)); m.put("loadMode", loadMode);
-        m.put("pgliteDefaultHeapBytes", heapDefault ? memoryBytes("768m") : null);
-        m.put("pgliteDefaultMemoryBudgetBytes", budgetDefault ? memoryBytes("2g") : null);
         m.put("rangeRows", rangeRows); m.put("readPercent", readPercent);
         m.put("analyticalPercent", analyticalPercent); m.put("childDeadlineSeconds", childDeadline);
         return m;

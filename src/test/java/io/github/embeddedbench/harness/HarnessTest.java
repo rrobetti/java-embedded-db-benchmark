@@ -1,5 +1,6 @@
 package io.github.embeddedbench.harness;
 
+import io.github.embeddedbench.db.DeterministicDataset;
 import io.github.embeddedbench.workload.Workload;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.HistogramLogReader;
@@ -68,6 +69,23 @@ class HarnessTest {
         assertThrows(ArithmeticException.class, () -> BenchmarkOptions.memoryBytes("999999999999g"));
         cli.options.duration = Double.NaN;
         assertThrows(IllegalArgumentException.class, cli.options::resolve);
+    }
+
+    @Test void defaultBudgetProvidesFullProfileAdmissionHeadroomAndPreservesOverrides() {
+        var cli = new BenchmarkCli();
+        var command = new CommandLine(cli);
+        command.parseArgs("--profile", "full");
+        cli.options.resolve();
+        long estimate = DeterministicDataset.logicalBytes(cli.options.rows, cli.options.payload) * 4
+                + BenchmarkOptions.memoryBytes(cli.options.jvmHeap)
+                + 128L * 1024 * 1024 + cli.options.threads * 2L * 1024 * 1024
+                + 512L * 1024 * 1024;
+        assertTrue(estimate < BenchmarkOptions.memoryBytes(cli.options.memoryBudget));
+
+        command.parseArgs("--profile", "full", "--memory-budget", "2g");
+        cli.options.resolve();
+        assertEquals(2L * 1024 * 1024 * 1024, cli.options.asMap().get("memoryBudgetBytes"));
+        assertTrue(estimate > BenchmarkOptions.memoryBytes(cli.options.memoryBudget));
     }
 
     @Test void independentHistogramCategoriesAndClassification() throws Exception {

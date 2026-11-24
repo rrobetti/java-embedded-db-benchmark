@@ -54,10 +54,14 @@ dependencies must already be cached. PowerShell setup uses `-Offline`.
 The default `quick` uses 1,000 rows, 128-byte payloads, one worker/connection,
 one second warmup and two seconds measurement per selected combination.
 It is intentionally small; it is **not** a meaningful production ranking.
-All engines use the same default 768m child heap/2g budget for a fair resource
+All engines use the same default 768m child heap/4g budget for a fair resource
 ceiling. Explicit heap/budget options override these values; an undersized
 PGlite heap can fail during initialization. The script's supervisor heap
 defaults to 512m.
+
+The 4g budget provides admission headroom for the `full` dataset. The effective
+limit is still capped at half the host RAM and 80% of a detected container
+memory limit; passing admission does not guarantee a run will fit in memory.
 
 | Profile | Rows | Warmup seconds | Measurement seconds | Fresh-JVM iterations |
 |---|---:|---:|---:|---:|

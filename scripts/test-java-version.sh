@@ -22,12 +22,15 @@ mkdir -p "$TEST_JAVA_HOME/bin"
 cat > "$TEST_JAVA_HOME/bin/java" <<'JAVA'
 #!/usr/bin/env bash
 if [[ "${1:-}" == -XshowSettings:properties ]]; then
-  printf '    java.home = %s\n' "$TEST_JAVA_HOME" >&2
+  printf '    java.home = %s\n' "${TEST_RUNTIME_HOME:-$TEST_JAVA_HOME}" >&2
 fi
 printf 'openjdk version "21.0.5"\n' >&2
 JAVA
 cat > "$TEST_JAVA_HOME/bin/javac" <<'JAVAC'
 #!/usr/bin/env bash
+if [[ "${1:-}" == -J-XshowSettings:properties ]]; then
+  printf '    java.home = %s\n' "${TEST_COMPILER_HOME:-$TEST_JAVA_HOME}" >&2
+fi
 printf 'javac %s\n' "${TEST_COMPILER_VERSION:-21.0.5}"
 exit "${TEST_COMPILER_EXIT:-0}"
 JAVAC
@@ -40,6 +43,22 @@ chmod +x "$TEST_JAVA_HOME/bin/java" "$TEST_JAVA_HOME/bin/javac"
   [[ "$JAVA_HOME" == "$TEST_JAVA_HOME" && "$MAVEN_SKIP_RC" == true ]]
   [[ "${PATH%%:*}" == "$JAVA_HOME/bin" ]]
 )
+runtime_home="$test_dir/runtime with spaces"
+mkdir -p "$runtime_home/bin"
+cp "$TEST_JAVA_HOME/bin/java" "$runtime_home/bin/java"
+(
+  unset JAVA_HOME MAVEN_SKIP_RC
+  export TEST_RUNTIME_HOME="$runtime_home" PATH="$runtime_home/bin:$TEST_JAVA_HOME/bin:$PATH"
+  prepare_java_build
+  [[ "$JAVA_HOME" == "$TEST_JAVA_HOME" && "${PATH%%:*}" == "$TEST_JAVA_HOME/bin" ]]
+)
+if (unset JAVA_HOME; export TEST_RUNTIME_HOME="$runtime_home" TEST_COMPILER_HOME="$runtime_home" PATH="$runtime_home/bin:$TEST_JAVA_HOME/bin:$PATH"; prepare_java_build) 2>/dev/null; then
+  echo "Expected a runtime-only compiler home to be rejected" >&2; exit 1
+fi
+if error="$(unset JAVA_HOME; export TEST_RUNTIME_HOME="$runtime_home" PATH="$runtime_home/bin:$TEST_JAVA_HOME/bin:$PATH"; javac() { return 127; }; prepare_java_build 2>&1)"; then
+  echo "Expected an unavailable compiler to be rejected" >&2; exit 1
+fi
+[[ "$error" == *"Install a JDK 21 or later with javac"* ]]
 for test_version in 21 21.0.5 25.0.5.1 25-ea 27+35; do
   (export JAVA_HOME="$TEST_JAVA_HOME" TEST_COMPILER_VERSION="$test_version"; prepare_java_build)
 done

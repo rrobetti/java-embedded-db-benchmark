@@ -17,9 +17,18 @@ prepare_java_build() {
       echo "Install JDK 21 or later and set JAVA_HOME." >&2; return 1;
     }
     JAVA_HOME="$(printf '%s\n' "$settings" | sed -n 's/^[[:space:]]*java.home = //p')"
+    if [[ -n "$JAVA_HOME" && ! -x "$JAVA_HOME/bin/javac" ]] && command -v javac >/dev/null; then
+      local compiler_home
+      settings="$(javac -J-XshowSettings:properties -version 2>&1)" || settings=
+      compiler_home="$(printf '%s\n' "$settings" | sed -n 's/^[[:space:]]*java.home = //p')"
+      if [[ -n "$compiler_home" && -x "$compiler_home/bin/java" && -x "$compiler_home/bin/javac" ]]; then
+        JAVA_HOME="$compiler_home"
+      fi
+    fi
   fi
   [[ -n "$JAVA_HOME" && -x "$JAVA_HOME/bin/java" && -x "$JAVA_HOME/bin/javac" ]] || {
     printf 'JAVA_HOME must point to a complete JDK 21 or later (with bin/java and bin/javac): %s\n' "$JAVA_HOME" >&2
+    echo "Install a JDK 21 or later with javac, or set JAVA_HOME to an installed JDK." >&2
     return 1
   }
   export JAVA_HOME

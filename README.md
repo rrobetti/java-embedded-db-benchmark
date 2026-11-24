@@ -20,8 +20,9 @@ SQL-error recovery limitations remain visible, not silently repaired.
 Install **JDK 21 or later** manually and set `JAVA_HOME` to it. The project
 compiles for Java 21; record the exact JDK when comparing benchmark results.
 Setup validates both the runtime and compiler and uses that JDK for Maven.
-If `JAVA_HOME` is unset, setup derives it from the active runtime. Maven
-startup files are skipped during setup so they cannot switch to an older JDK.
+If `JAVA_HOME` is unset, setup selects the active runtime's JDK or, if that
+runtime lacks `javac`, the active compiler's JDK. Maven startup files are
+skipped during setup so they cannot switch to an older JDK.
 
 ```bash
 bash scripts/setup.sh

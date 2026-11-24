@@ -5,8 +5,10 @@
 Install JDK 21 or later and set `JAVA_HOME`; scripts verify the **major version**
 of both `java` and `javac`, not merely the presence of `java`. The Maven
 wrapper supplies Maven. When `JAVA_HOME` is unset, setup uses the active
-runtime's `java.home` and requires a complete JDK there. Setup sets
-`MAVEN_SKIP_RC=true` so Maven startup files (such as `~/.mavenrc` or
+runtime's `java.home`, or the active `javac`'s JDK if the runtime is missing
+`javac`. It requires a complete JDK in either case. If no JDK is available,
+install JDK 21 or later (including the compiler) or set `JAVA_HOME` to one.
+Setup sets `MAVEN_SKIP_RC=true` so Maven startup files (such as `~/.mavenrc` or
 `mavenrc_pre.cmd`) cannot override the validated JDK. Maven settings and
 the dependency cache are still used normally.
 

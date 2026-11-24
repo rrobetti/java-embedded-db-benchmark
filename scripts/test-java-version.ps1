@@ -20,11 +20,12 @@ $bin = Join-Path $testJavaHome 'bin'
 $suffix = if ($IsWindows) { '.exe' } else { '' }
 function java {
     $global:LASTEXITCODE = 0
-    if ($args[0] -eq '-XshowSettings:properties') { "    java.home = $testJavaHome" }
+    if ($args[0] -eq '-XshowSettings:properties') { "    java.home = $script:runtimeHome" }
     'openjdk version "21.0.5"'
 }
 function javac {
     $global:LASTEXITCODE = $script:compilerExit
+    if ($args[0] -eq '-J-XshowSettings:properties') { "    java.home = $script:compilerHome" }
     "javac $script:compilerVersion"
 }
 try {
@@ -34,12 +35,38 @@ try {
     }
     $compilerVersion = '21.0.5'
     $compilerExit = 0
+    $runtimeHome = $testJavaHome
+    $compilerHome = $testJavaHome
     $env:JAVA_HOME = $null
     Initialize-JavaBuild | Out-Null
     if ($env:JAVA_HOME -ne $testJavaHome -or $env:MAVEN_SKIP_RC -ne 'true' -or
         $env:PATH.Split([IO.Path]::PathSeparator)[0] -ne $bin) {
         throw 'Expected the active JDK to be selected and protected from Maven startup files.'
     }
+    $runtimeHome = Join-Path $testDir 'runtime with spaces'
+    $runtimeBin = Join-Path $runtimeHome 'bin'
+    New-Item -ItemType Directory -Path $runtimeBin -Force | Out-Null
+    New-Item -ItemType File -Path (Join-Path $runtimeBin "java$suffix") | Out-Null
+    $env:JAVA_HOME = $null
+    Initialize-JavaBuild | Out-Null
+    if ($env:JAVA_HOME -ne $testJavaHome) { throw 'Expected the active compiler JDK to be selected.' }
+    $compilerHome = $runtimeHome
+    $env:JAVA_HOME = $null
+    $rejected = $false
+    try { Initialize-JavaBuild | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Expected a runtime-only compiler home to be rejected.' }
+    $compilerHome = $testJavaHome
+    $compilerExit = 1
+    $env:JAVA_HOME = $null
+    $rejected = $false
+    try { Initialize-JavaBuild | Out-Null } catch {
+        if ($_.Exception.Message -notmatch 'Install a JDK with javac') { throw }
+        $rejected = $true
+    }
+    if (-not $rejected) { throw 'Expected an unavailable compiler to be rejected.' }
+    $compilerExit = 0
+    $runtimeHome = $testJavaHome
+    $env:JAVA_HOME = $testJavaHome
     foreach ($compilerVersion in @('21', '21.0.5', '25.0.5.1', '25-ea', '27+35')) {
         Initialize-JavaBuild | Out-Null
     }

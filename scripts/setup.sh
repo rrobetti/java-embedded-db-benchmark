@@ -9,9 +9,8 @@ case "${1:-}" in
   *) echo "Usage: bash scripts/setup.sh [--offline]" >&2; exit 2 ;;
 esac
 [[ $# -le 1 ]] || { echo "Too many arguments" >&2; exit 2; }
-if [[ -n "${JAVA_HOME:-}" ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
 source scripts/java-version.sh
-require_java_21
+prepare_java_build
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in

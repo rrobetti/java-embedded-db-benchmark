@@ -1,9 +1,8 @@
 param([switch]$Offline)
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
-if ($env:JAVA_HOME) { $env:PATH = "$(Join-Path $env:JAVA_HOME 'bin')$([IO.Path]::PathSeparator)$env:PATH" }
 . (Join-Path $PSScriptRoot 'java-version.ps1')
-$version = Assert-JavaVersion
+$version = Initialize-JavaBuild
 $os = [Runtime.InteropServices.RuntimeInformation]::OSDescription
 $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $cpu = [Environment]::ProcessorCount

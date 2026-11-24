@@ -2,8 +2,18 @@
 
 ## Reproducible normal path
 
-Install JDK 21 or later and set `JAVA_HOME`; scripts verify the **major version**,
-not merely the presence of `java`. The Maven wrapper supplies Maven.
+Install JDK 21 or later and set `JAVA_HOME`; scripts verify the **major version**
+of both `java` and `javac`, not merely the presence of `java`. The Maven
+wrapper supplies Maven. When `JAVA_HOME` is unset, setup uses the active
+runtime's `java.home` and requires a complete JDK there. Setup sets
+`MAVEN_SKIP_RC=true` so Maven startup files (such as `~/.mavenrc` or
+`mavenrc_pre.cmd`) cannot override the validated JDK. Maven settings and
+the dependency cache are still used normally.
+
+If Maven reports `release version 21 not supported`, set `JAVA_HOME` to a
+complete JDK 21 or later installation and rerun setup. For direct Maven or
+IDE builds, configure their JDK as well; the IDE's project SDK alone does
+not control Maven's JDK.
 
 ```bash
 bash scripts/setup.sh

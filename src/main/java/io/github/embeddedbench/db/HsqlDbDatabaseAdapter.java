@@ -35,6 +35,12 @@ public final class HsqlDbDatabaseAdapter extends AbstractDatabaseAdapter {
     }
 
     @Override
+    String binaryType() {
+        // BLOB allocates a 32 KiB LOB block even for a small payload.
+        return "VARBINARY(2147483647)";
+    }
+
+    @Override
     void afterInitialize(Connection connection) throws SQLException {
         if (!"locks".equals(profile)) {
             try (Statement statement = connection.createStatement()) {

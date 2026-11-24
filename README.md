@@ -17,8 +17,8 @@ SQL-error recovery limitations remain visible, not silently repaired.
 
 ## Start
 
-Install a **JDK 21** manually and set `JAVA_HOME` to it. Other Java major
-versions are deliberately rejected by the launch scripts.
+Install **JDK 21 or later** manually and set `JAVA_HOME` to it. The project
+compiles for Java 21; record the exact JDK when comparing benchmark results.
 
 ```bash
 bash scripts/setup.sh

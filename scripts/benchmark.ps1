@@ -16,9 +16,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
 }
 if ($heap -notmatch '^[1-9][0-9]*[kKmMgG]?$') { throw "Invalid JVM heap: $heap" }
 if ($env:JAVA_HOME) { $env:PATH = "$(Join-Path $env:JAVA_HOME 'bin')$([IO.Path]::PathSeparator)$env:PATH" }
-if (-not (Get-Command java -ErrorAction SilentlyContinue)) { throw 'Install JDK 21 manually and set JAVA_HOME.' }
-$version = (& java -version 2>&1 | Out-String)
-if ($version -notmatch 'version "21([."]|-)') { throw 'JDK 21 is required. Set JAVA_HOME to JDK 21.' }
+. (Join-Path $PSScriptRoot 'java-version.ps1')
+$version = Assert-JavaVersion
 $os = [Runtime.InteropServices.RuntimeInformation]::OSDescription
 $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $cpu = [Environment]::ProcessorCount

@@ -13,6 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        java: ['21', '25']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
@@ -20,19 +21,22 @@ jobs:
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: ${{ matrix.java }}
           cache: maven
       - name: Bash syntax
         shell: bash
-        run: bash -n scripts/setup.sh scripts/benchmark.sh
+        run: |
+          bash -n scripts/setup.sh scripts/benchmark.sh scripts/java-version.sh scripts/test-java-version.sh
+          bash scripts/test-java-version.sh
       - name: PowerShell syntax
         shell: pwsh
         run: |
-          foreach ($file in @('scripts/setup.ps1', 'scripts/benchmark.ps1')) {
+          foreach ($file in @('scripts/setup.ps1', 'scripts/benchmark.ps1', 'scripts/java-version.ps1', 'scripts/test-java-version.ps1')) {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors) { $errors | Format-List; exit 1 }
           }
+          ./scripts/test-java-version.ps1
       - name: Package, real tests and all-engine connectivity (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -92,7 +96,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: benchmark-${{ matrix.os }}
+          name: benchmark-${{ matrix.os }}-java${{ matrix.java }}
           path: |
             benchmark-results/ci/
             target/surefire-reports/

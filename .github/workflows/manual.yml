@@ -1,0 +1,116 @@
+name: Explicit larger benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Profile (explicit overrides below still apply)
+        type: choice
+        options: [standard, full, stress, endurance]
+        default: standard
+      rows:
+        description: Logical rows per entity (1 to 2000000)
+        default: '100000'
+        required: true
+      duration:
+        description: Measured seconds per combination (1 to 600)
+        default: '30'
+        required: true
+      threads:
+        description: Workers and connections (1 to 8)
+        default: '1'
+        required: true
+      memory_budget:
+        description: Watchdog total RSS budget up to 4g (not an OS hard cap)
+        default: '2048m'
+        required: true
+      jvm_heap:
+        description: Maximum Java heap per process (768m to 2g)
+        default: '1024m'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PROFILE: ${{ inputs.profile }}
+      ROWS: ${{ inputs.rows }}
+      DURATION: ${{ inputs.duration }}
+      THREADS: ${{ inputs.threads }}
+      MEMORY_BUDGET: ${{ inputs.memory_budget }}
+      JVM_HEAP: ${{ inputs.jvm_heap }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Validate explicit safety bounds
+        shell: bash
+        run: |
+          [[ "$PROFILE" =~ ^(standard|full|stress|endurance)$ ]]
+          [[ "$ROWS" =~ ^[1-9][0-9]{0,6}$ ]] && (( ROWS <= 2000000 ))
+          [[ "$DURATION" =~ ^[1-9][0-9]{0,2}$ ]] && (( DURATION <= 600 ))
+          [[ "$THREADS" =~ ^[1-8]$ ]]
+          [[ "$MEMORY_BUDGET" =~ ^[1-9][0-9]*[mMgG]$ ]]
+          [[ "$JVM_HEAP" =~ ^[1-9][0-9]*[mMgG]$ ]]
+          python - <<'PY'
+          import os
+          def size(name):
+              value = os.environ[name].lower()
+              return int(value[:-1]) * (1024**2 if value[-1] == "m" else 1024**3)
+          heap, budget = size("JVM_HEAP"), size("MEMORY_BUDGET")
+          assert 768 * 1024**2 <= heap <= 2 * 1024**3, "Heap must be 768m to 2g"
+          assert heap + 512 * 1024**2 <= budget <= 4 * 1024**3, "Budget needs heap + 512m headroom and must be <=4g"
+          PY
+          echo 'Limits are admission/RSS watchdog + Java heap, NOT kernel memory/CPU enforcement.'
+      - name: Package, tests and all-engine connectivity
+        shell: bash
+        run: bash scripts/setup.sh
+      - name: Run explicitly bounded suite
+        shell: bash
+        run: |
+          bash scripts/benchmark.sh --offline --profile "$PROFILE" \
+            --databases h2,hsqldb,sqlite,pglite --workloads point,mixed \
+            --rows "$ROWS" --payload-size 128 --threads "$THREADS" --connections "$THREADS" \
+            --warmup 2 --duration "$DURATION" --batch-size 500 --transaction-size 10 \
+            --iterations 1 \
+            --memory-budget "$MEMORY_BUDGET" --jvm-heap "$JVM_HEAP" \
+            --child-deadline 900 --output benchmark-results/manual
+      - name: Validate larger suite reports
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("benchmark-results/manual")
+          for extension in ("json", "csv", "md", "html"):
+              path = root / f"report.{extension}"
+              assert path.is_file() and path.stat().st_size > 0, path
+          report = json.loads((root / "report.json").read_text(encoding="utf-8"))
+          runs = report["results"]
+          expected = {(engine, workload) for engine in ("h2", "hsqldb", "sqlite", "pglite") for workload in ("point", "mixed")}
+          assert len(runs) == len(expected)
+          assert {(run["engine"], run["scenario"]) for run in runs} == expected
+          for run in runs:
+              assert run["status"] == "OK" and run["valid"] is True, run
+              assert run["datasetValid"] is True and run["workloadValid"] is True, run
+              assert run["measurement"]["successes"] > 0 and run["measurement"]["failures"] == 0, run
+          print("Validated all eight results.")
+          PY
+      - name: Upload all reports and test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manual-benchmark
+          path: |
+            benchmark-results/manual/
+            target/surefire-reports/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,8 +1,7 @@
 param([switch]$Offline)
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
-. (Join-Path $PSScriptRoot 'java-version.ps1')
-$version = Initialize-JavaBuild
+$env:MAVEN_SKIP_RC = 'true'
 $os = [Runtime.InteropServices.RuntimeInformation]::OSDescription
 $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $cpu = [Environment]::ProcessorCount
@@ -16,7 +15,7 @@ if ($IsWindows) {
     $ram = & sysctl -n hw.memsize
 }
 Write-Host "OS=$os arch=$arch logicalCPUs=$cpu physicalRAMBytes=$ram"
-Write-Host $version
+& java -version
 $nativeTmp = if ($env:BENCHMARK_NATIVE_TMP) { $env:BENCHMARK_NATIVE_TMP } else { Join-Path $PWD 'target/native-tmp' }
 New-Item -ItemType Directory -Force -Path $nativeTmp | Out-Null
 $nativeTmp = (Resolve-Path $nativeTmp).Path

@@ -1,6 +1,6 @@
 # Java embedded relational database benchmark
 
-A standalone **Java 21 / JDBC** comparison of H2, HSQLDB, SQLite and
+A standalone **Java 25 / JDBC** comparison of H2, HSQLDB, SQLite and
 PGlite4j. Each measured engine/workload runs in a fresh JVM. There is no
 required PostgreSQL server, Docker, Node.js or system Maven installation.
 This is a benchmark harness, not a precomputed leaderboard.
@@ -17,8 +17,10 @@ SQL-error recovery limitations remain visible, not silently repaired.
 
 ## Start
 
-Install **JDK 21 or later** manually and set `JAVA_HOME` to it. The project
-compiles for Java 21; record the exact JDK when comparing benchmark results.
+Use **JDK 25 or later** to build the project, which compiles for Java 25;
+record the exact JDK when comparing benchmark results. Setup invokes the
+Maven wrapper with the environment's `java` and `JAVA_HOME` (if set), without
+pre-validating the JDK. Maven startup files are skipped during setup.
 
 ```bash
 bash scripts/setup.sh

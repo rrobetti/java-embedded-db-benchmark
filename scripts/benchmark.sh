@@ -17,7 +17,7 @@ done
 [[ "$heap" =~ ^[1-9][0-9]*[kKmMgG]?$ ]] || { echo "Invalid JVM heap: $heap" >&2; exit 2; }
 if [[ -n "${JAVA_HOME:-}" ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
 source scripts/java-version.sh
-require_java_21
+require_java_25
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in

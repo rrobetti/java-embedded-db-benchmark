@@ -1,6 +1,6 @@
 # Contributing
 
-Use JDK 21 or later and the checked-in Maven wrapper, not an arbitrary system Maven.
+Use JDK 25 or later and the checked-in Maven wrapper, not an arbitrary system Maven.
 No external database, Docker or Node.js is needed.
 
 ```bash

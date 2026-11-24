@@ -9,9 +9,7 @@ case "${1:-}" in
   *) echo "Usage: bash scripts/setup.sh [--offline]" >&2; exit 2 ;;
 esac
 [[ $# -le 1 ]] || { echo "Too many arguments" >&2; exit 2; }
-if [[ -n "${JAVA_HOME:-}" ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
-source scripts/java-version.sh
-require_java_21
+export MAVEN_SKIP_RC=true
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
@@ -26,7 +24,7 @@ case "$os" in
   *) cpus="unknown"; ram="unknown" ;;
 esac
 printf 'OS=%s arch=%s logicalCPUs=%s physicalRAMBytes=%s\n' "$os" "$arch" "$cpus" "$ram"
-printf '%s\n' "$java_version"
+java -version
 native_tmp="${BENCHMARK_NATIVE_TMP:-$PWD/target/native-tmp}"
 mkdir -p "$native_tmp"
 native_tmp="$(cd "$native_tmp" && pwd)"

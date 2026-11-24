@@ -2,8 +2,8 @@
 
 ## Reproducible normal path
 
-Install JDK 21 and set `JAVA_HOME`; scripts verify the **major version**, not
-merely the presence of `java`. The Maven wrapper supplies Maven.
+Install JDK 21 or later and set `JAVA_HOME`; scripts verify the **major version**,
+not merely the presence of `java`. The Maven wrapper supplies Maven.
 
 ```bash
 bash scripts/setup.sh

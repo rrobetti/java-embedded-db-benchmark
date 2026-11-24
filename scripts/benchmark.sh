@@ -16,9 +16,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$heap" =~ ^[1-9][0-9]*[kKmMgG]?$ ]] || { echo "Invalid JVM heap: $heap" >&2; exit 2; }
 if [[ -n "${JAVA_HOME:-}" ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
-command -v java >/dev/null || { echo "Install JDK 21 and set JAVA_HOME." >&2; exit 1; }
-java_version="$(java -version 2>&1)"
-[[ "$java_version" =~ version\ \"21([.\"]|-) ]] || { echo "JDK 21 is required. Set JAVA_HOME to JDK 21." >&2; exit 1; }
+source scripts/java-version.sh
+require_java_21
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in

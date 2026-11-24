@@ -2,9 +2,8 @@ param([switch]$Offline)
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 if ($env:JAVA_HOME) { $env:PATH = "$(Join-Path $env:JAVA_HOME 'bin')$([IO.Path]::PathSeparator)$env:PATH" }
-if (-not (Get-Command java -ErrorAction SilentlyContinue)) { throw 'Install JDK 21 manually and set JAVA_HOME.' }
-$version = (& java -version 2>&1 | Out-String)
-if ($version -notmatch 'version "21([."]|-)') { throw "JDK 21 is required. Set JAVA_HOME to JDK 21.`n$version" }
+. (Join-Path $PSScriptRoot 'java-version.ps1')
+$version = Assert-JavaVersion
 $os = [Runtime.InteropServices.RuntimeInformation]::OSDescription
 $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $cpu = [Environment]::ProcessorCount
@@ -63,5 +62,5 @@ if ($IsWindows) {
 if ($LASTEXITCODE -ne 0) { throw 'Maven package failed.' }
 & java -Xmx1024m "-Djava.io.tmpdir=$nativeTmp" "-Dorg.sqlite.tmpdir=$nativeTmp" -cp target/benchmark.jar io.github.embeddedbench.db.DatabaseSmoke
 if ($LASTEXITCODE -ne 0) {
-    throw 'Connectivity failed. Check JDK 21, native OS/architecture support, writable/executable temp storage and Windows DLL/security policy. Set BENCHMARK_NATIVE_TMP to a user-owned directory. No elevated install is attempted.'
+    throw 'Connectivity failed. Check the Java version, native OS/architecture support, writable/executable temp storage and Windows DLL/security policy. Set BENCHMARK_NATIVE_TMP to a user-owned directory. No elevated install is attempted.'
 }

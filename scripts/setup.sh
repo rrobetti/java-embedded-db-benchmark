@@ -10,12 +10,8 @@ case "${1:-}" in
 esac
 [[ $# -le 1 ]] || { echo "Too many arguments" >&2; exit 2; }
 if [[ -n "${JAVA_HOME:-}" ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
-command -v java >/dev/null || { echo "Install a JDK 21 manually and set JAVA_HOME." >&2; exit 1; }
-java_version="$(java -version 2>&1)"
-[[ "$java_version" =~ version\ \"21([.\"]|-) ]] || {
-  printf 'JDK 21 is required, not the active runtime:\n%s\nSet JAVA_HOME to a JDK 21 installation.\n' "$java_version" >&2
-  exit 1
-}
+source scripts/java-version.sh
+require_java_21
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
@@ -67,7 +63,7 @@ else
   bash ./mvnw -B package
 fi
 if ! java -Xmx1024m "-Djava.io.tmpdir=$native_tmp" "-Dorg.sqlite.tmpdir=$native_tmp" -cp target/benchmark.jar io.github.embeddedbench.db.DatabaseSmoke; then
-  echo "Connectivity failed. Check the complete error above, JDK 21, OS/architecture support and native extraction permissions." >&2
+  echo "Connectivity failed. Check the complete error above, Java version, OS/architecture support and native extraction permissions." >&2
   echo "For native loader failures set BENCHMARK_NATIVE_TMP to a user-owned writable executable filesystem; no elevated installation is performed." >&2
   exit 1
 fi

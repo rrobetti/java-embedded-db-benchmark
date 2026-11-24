@@ -1,7 +1,7 @@
 # Reproducing results
 
 1. Record the repository commit and ensure a clean working tree.
-2. Install JDK 21 or later, record vendor/version, then run setup.
+2. Install JDK 25 or later, record vendor/version, then run setup.
 3. Run real connectivity for all four engines.
 4. Record CPU/architecture, physical and available/container RAM, OS,
    power settings, other load, JVM options and native temp path.

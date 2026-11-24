@@ -70,7 +70,7 @@ public final class BenchmarkOptions {
         duration = duration == null ? defaultDuration : duration;
         repetitions = repetitions == null ? (List.of("standard", "full").contains(profile.toLowerCase(Locale.ROOT)) ? 5 : 1) : repetitions;
         jvmHeap = jvmHeap == null ? "768m" : jvmHeap;
-        memoryBudget = memoryBudget == null ? "2g" : memoryBudget;
+        memoryBudget = memoryBudget == null ? "4g" : memoryBudget;
         childDeadline = childDeadline == null ? Math.max(120, (long) Math.ceil(warmup + duration) + 120) : childDeadline;
         output = output.toAbsolutePath().normalize();
         if (rows < 1 || payload < 1 || threads < 1 || connections < 1 || connections > threads || batch < 1

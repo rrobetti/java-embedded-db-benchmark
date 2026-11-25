@@ -505,6 +505,17 @@ class HarnessTest {
             Map<?, ?> reads = (Map<?, ?>) refresh.get("reads");
             assertTrue(((Number) ((Map<?, ?>) reads.get("before")).get("successes")).longValue() > 0);
             assertTrue(((Number) ((Map<?, ?>) reads.get("after")).get("successes")).longValue() > 0);
+            long completions = 0, overlapping = 0;
+            for (String phase : List.of("before", "during", "after")) {
+                Map<?, ?> report = (Map<?, ?>) reads.get(phase);
+                long completed = ((Number) report.get("completedReadOperations")).longValue();
+                double seconds = ((Number) report.get("elapsedSeconds")).doubleValue();
+                assertTrue(completed >= 0);
+                assertEquals(completed / seconds, ((Number) report.get("throughputOpsPerSecond")).doubleValue(), 1e-9);
+                completions += completed;
+                overlapping += ((Number) report.get("successes")).longValue();
+            }
+            assertTrue(completions > 0 && completions <= overlapping);
             assertNull(refresh.get("blockingDurationNanos"));
             assertTrue(HistogramAggregation.merge(options.output, List.of(result)).isEmpty());
         }

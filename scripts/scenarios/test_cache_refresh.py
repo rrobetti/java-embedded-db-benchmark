@@ -9,7 +9,7 @@ import cache_refresh as runner
 class CacheRefreshTest(unittest.TestCase):
     def test_missing_during_samples_are_not_fabricated(self):
         def phase(count, rate, p95):
-            return {"successes": count, "throughputOpsPerSecond": rate,
+            return {"successes": count, "completedReadOperations": count, "throughputOpsPerSecond": rate,
                     "latency": {"read": {"p95Nanos": p95, "p99Nanos": p95, "maxNanos": p95}}}
         result = {
             "status": "OK", "artifactDirectory": "run",
@@ -29,9 +29,16 @@ class CacheRefreshTest(unittest.TestCase):
                 json.dumps({"phase": "refresh-during", "rssBytes": 125}) + "\n", encoding="utf-8")
             metrics = runner.extract(result, path)
             self.assertIsNone(metrics["duringP95Ratio"])
-            self.assertIsNone(metrics["duringThroughputRatio"])
+            self.assertEqual(metrics["duringThroughputRatio"], 0)
             self.assertIsNone(metrics["blockingDurationNanos"])
             self.assertEqual(metrics["sampledTemporaryRssGrowthBytes"], 25)
+            result["cacheRefresh"]["reads"]["during"] = phase(1, 0, 200)
+            result["cacheRefresh"]["reads"]["during"]["completedReadOperations"] = 0
+            metrics = runner.extract(result, path)
+            self.assertEqual(metrics["duringReadOps"], 0)
+            self.assertEqual(metrics["duringOverlappingReadOps"], 1)
+            self.assertEqual(metrics["duringP95Ratio"], 2)
+            self.assertEqual(metrics["duringThroughputRatio"], 0)
             result["cacheRefresh"]["reads"]["during"] = phase(1, 5, 200)
             result["status"] = "COMPLETED_WITH_ERRORS"
             self.assertIsNone(runner.extract(result, path)["duringP95Ratio"])

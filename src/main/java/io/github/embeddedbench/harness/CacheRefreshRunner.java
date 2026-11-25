@@ -17,6 +17,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** A bounded cache fixture with readers running across a real JDBC refresh. */
@@ -31,7 +32,8 @@ final class CacheRefreshRunner {
                 + "Reads are single-row transactions. Updates may expose old or new values; invalidations may "
                 + "expose absence. Replacement deletes and reinserts its selected range in one transaction; "
                 + "readers must never observe a missing replacement row. Overlapping reads are attributed to "
-                + "the refresh interval. Optional pacing is closed-loop, not an open-loop arrival guarantee. "
+                + "the refresh interval for latency; throughput uses completion counters sampled at phase boundaries. "
+                + "Boundary sampling can distort very short intervals. Optional pacing is closed-loop, not an open-loop arrival guarantee. "
                 + "Blocking duration is unavailable, not inferred from latency.");
         result.put("cacheEntries", options.rows);
         result.put("transactionIsolation", setup.getTransactionIsolation());
@@ -63,6 +65,7 @@ final class CacheRefreshRunner {
         var fatal = new AtomicReference<Throwable>();
         var refreshStart = new AtomicLong();
         var refreshEnd = new AtomicLong();
+        var completions = new AtomicLongArray(options.threads);
         var ready = new CountDownLatch(options.threads);
         var begin = new CountDownLatch(1);
         Object lock = new Object();
@@ -71,12 +74,13 @@ final class CacheRefreshRunner {
             final int index = i;
             Connection connection = serialized ? setup : readers.get(i);
             Thread worker = new Thread(() -> readLoop(connection, serialized, lock, options, invalidation,
-                    readGroups, index, alive, fatal, refreshStart, refreshEnd, ready, begin), "cache-reader-" + i);
+                    readGroups, index, alive, fatal, refreshStart, refreshEnd, completions, ready, begin), "cache-reader-" + i);
             worker.setDaemon(true);
             workers.add(worker);
             worker.start();
         }
         long beforeStart = 0, duringStart = 0, afterStart = 0, end = 0;
+        long beforeCompletions = 0, duringCompletions = 0, afterCompletions = 0;
         Throwable failure = null;
         try {
             ready.await();
@@ -91,17 +95,20 @@ final class CacheRefreshRunner {
             sampler.phase("refresh-during");
             duringStart = System.nanoTime();
             refreshStart.set(duringStart);
+            beforeCompletions = completionCount(completions);
             if (serialized) {
                 synchronized (lock) { refresh(setup, options, affected); }
             } else refresh(setup, options, affected);
             afterStart = System.nanoTime();
             refreshEnd.set(afterStart);
+            duringCompletions = completionCount(completions);
             result.put("refreshNanos", afterStart - duringStart);
             result.put("afterRefreshResources", Resources.snapshot(directory));
             sampler.phase("refresh-after");
             sleep(options.refreshAfter);
             throwIfFatal(fatal);
             end = System.nanoTime();
+            afterCompletions = completionCount(completions);
         } catch (Throwable error) {
             failure = error;
             throw error;
@@ -137,11 +144,15 @@ final class CacheRefreshRunner {
         String[] names = {"before", "during", "after"};
         double[] seconds = {(duringStart - beforeStart) / 1e9, (afterStart - duringStart) / 1e9,
                 (end - afterStart) / 1e9};
+        long[] completionsByPhase = {beforeCompletions, duringCompletions - beforeCompletions,
+                afterCompletions - duringCompletions};
         long failures = 0;
         for (int phase = 0; phase < 3; phase++) {
             var merged = new Measurements();
             for (Measurements local : readGroups.get(phase)) merged.merge(local);
             var report = merged.report(seconds[phase], seconds[phase]);
+            report.put("completedReadOperations", completionsByPhase[phase]);
+            report.put("throughputOpsPerSecond", seconds[phase] > 0 ? completionsByPhase[phase] / seconds[phase] : null);
             failures += ((Number) report.get("failures")).longValue();
             summaries.put(names[phase], report);
             merged.save(options.output, "refresh-" + names[phase], seconds[phase]);
@@ -152,10 +163,16 @@ final class CacheRefreshRunner {
         return result;
     }
 
+    private static long completionCount(AtomicLongArray completions) {
+        long total = 0;
+        for (int i = 0; i < completions.length(); i++) total += completions.get(i);
+        return total;
+    }
+
     private static void readLoop(Connection connection, boolean serialized, Object lock, BenchmarkOptions options,
                                  boolean allowMissing, List<List<Measurements>> groups, int index, AtomicBoolean alive,
                                  AtomicReference<Throwable> fatal, AtomicLong refreshStart, AtomicLong refreshEnd,
-                                 CountDownLatch ready, CountDownLatch begin) {
+                                 AtomicLongArray completions, CountDownLatch ready, CountDownLatch begin) {
         PreparedStatement statement = null;
         try {
             if (serialized) {
@@ -174,6 +191,7 @@ final class CacheRefreshRunner {
                     } else read(statement, id, allowMissing, options, refreshStart);
                 } catch (Throwable exception) { error = exception; }
                 long completed = System.nanoTime();
+                if (error == null) completions.incrementAndGet(index);
                 long from = refreshStart.get(), to = refreshEnd.get();
                 int phase = from == 0 || completed < from ? 0
                         : submitted <= (to == 0 ? Long.MAX_VALUE : to) ? 1 : 2;

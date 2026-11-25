@@ -104,7 +104,8 @@ def extract(result, directory):
     for phase in ("before", "during", "after"):
         report = refresh["reads"][phase]
         latency = report["latency"]["read"]
-        metrics[phase + "ReadOps"] = report["successes"]
+        metrics[phase + "ReadOps"] = report["completedReadOperations"]
+        metrics[phase + "OverlappingReadOps"] = report["successes"]
         metrics[phase + "ReadOpsPerSecond"] = report["throughputOpsPerSecond"]
         metrics[phase + "ReadP95Nanos"] = latency["p95Nanos"]
         metrics[phase + "ReadP99Nanos"] = latency["p99Nanos"]
@@ -114,7 +115,7 @@ def extract(result, directory):
         if baseline and metrics["duringReadP95Nanos"] is not None else None
     before_rate = metrics["beforeReadOpsPerSecond"]
     metrics["duringThroughputRatio"] = metrics["duringReadOpsPerSecond"] / before_rate \
-        if before_rate and metrics["duringReadOps"] > 0 else None
+        if before_rate and metrics["duringReadOpsPerSecond"] is not None else None
     if result.get("status") != "OK":
         metrics["duringP95Ratio"] = None
         metrics["duringThroughputRatio"] = None
@@ -169,12 +170,15 @@ def write_reports(output, manifest):
     note = ("Each run adds a separate cache table with one entry per base row. Readers perform single-row lookups; "
             "replacement is atomic for its selected range and readers must not observe missing entries. "
             "Other strategies expose their documented old/new or invalidated states. Overlapping reads are "
-            "attributed to the refresh interval; no samples means latency degradation is unavailable, not zero. "
+            "attributed to the refresh interval for latency; throughput uses successful completions sampled at "
+            "phase boundaries, which can distort very short intervals. No overlapping reads means latency "
+            "degradation is unavailable, not zero. "
             "Exact lock-blocking duration is unavailable. RSS peaks are sampled and may miss spikes. "
             "PGlite uses a custom loopback transport and serialized single-session execution.")
     common.write_json(output / "cache-refresh.json", {"identity": config, "runs": rows, "methodology": note})
     columns = ["engine", "strategy", "percentage", "repetition", "status", "error", "affectedEntries",
                "cacheEntries", "refreshNanos", "beforeReadOps", "duringReadOps", "afterReadOps",
+               "beforeOverlappingReadOps", "duringOverlappingReadOps", "afterOverlappingReadOps",
                "beforeReadOpsPerSecond", "duringReadOpsPerSecond", "afterReadOpsPerSecond",
                "beforeReadP95Nanos", "duringReadP95Nanos", "afterReadP95Nanos", "duringP95Ratio",
                "beforeReadP99Nanos", "duringReadP99Nanos", "afterReadP99Nanos",

@@ -318,8 +318,10 @@ serializes the writer and readers on one session. SQLite may report
 single-row result against the permitted old/new or invalidated state, while
 the final cache is fully validated. Replacement uses one transaction and
 must never expose a missing selected row. This does not establish a
-multi-row snapshot guarantee. A short refresh can have no overlapping reads;
-its during-refresh latency and ratios are then unavailable, not zero. Exact
+multi-row snapshot guarantee. Latency uses reads overlapping each phase;
+throughput uses successful completions sampled at phase boundaries, which can
+distort very short refresh intervals. A short refresh can have no overlapping
+reads; its during-refresh latency ratio is then unavailable, not zero. Exact
 lock-blocking duration is not measured. `--dry-run`, `--resume` and
 `--rerun-failed` are supported.
 

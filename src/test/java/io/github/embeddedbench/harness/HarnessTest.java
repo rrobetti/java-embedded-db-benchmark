@@ -189,6 +189,34 @@ class HarnessTest {
         assertTrue(result.elapsedSeconds() >= 0.3);
     }
 
+    @Test void fixedReadArrivalsRemainIndependentOfWriteArrivals() throws Exception {
+        BenchmarkOptions options = options();
+        options.scenarios = List.of("rw-independent"); options.fixedReadRate = 20;
+        options.readPercent = 80; options.queueCapacity = 32; options.resolve();
+        var reads = new AtomicLong();
+        var writes = new AtomicLong();
+        Workload workload = typedWorkload(reads, writes);
+        var result = PhaseRunner.run(workload, Arrays.asList(new Connection[1]), 1, false, options, 0.4, 1);
+        assertEquals(8L, result.arrivalCounts().get("offeredReads"));
+        assertEquals(2L, result.arrivalCounts().get("offeredWrites"));
+        assertEquals(8L, result.arrivalCounts().get("acceptedReads"));
+        assertEquals(2L, result.arrivalCounts().get("acceptedWrites"));
+        assertEquals(8L, reads.get());
+        assertEquals(2L, writes.get());
+    }
+
+    @Test void dedicatedReaderAndWriterWorkersExecuteTheirAssignedOperations() throws Exception {
+        BenchmarkOptions options = options();
+        options.scenarios = List.of("rw-hot"); options.threadSpec = "2"; options.readerWorkers = 1; options.resolve();
+        var reads = new AtomicLong();
+        var writes = new AtomicLong();
+        var result = PhaseRunner.run(typedWorkload(reads, writes), Arrays.asList(new Connection[2]),
+                2, false, options, 0.1, 1);
+        assertTrue(reads.get() > 0);
+        assertTrue(writes.get() > 0);
+        assertEquals(reads.get() + writes.get(), result.measurements().report(1, 1).get("successes"));
+    }
+
     @Test void correctnessErrorsAreFatal() {
         BenchmarkOptions options = options(); options.resolve();
         Workload workload = new Workload() {
@@ -412,6 +440,19 @@ class HarnessTest {
                 catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new SQLException(e); }
                 count.incrementAndGet();
                 return new Operation("read", 1);
+            }
+            @Override public void validate(Connection c) {}
+        };
+    }
+
+    private static Workload typedWorkload(AtomicLong reads, AtomicLong writes) {
+        return new Workload() {
+            @Override public Operation execute(Connection c, SplittableRandom r) {
+                throw new AssertionError("Expected explicit operation type");
+            }
+            @Override public Operation execute(Connection c, SplittableRandom r, OperationType type) {
+                (type == OperationType.READ ? reads : writes).incrementAndGet();
+                return new Operation(type == OperationType.READ ? "read" : "write", 1);
             }
             @Override public void validate(Connection c) {}
         };

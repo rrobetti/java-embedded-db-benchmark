@@ -7,7 +7,7 @@ names fail. The registry exposes:
 |---|---|
 | Lookups/ranges | `point`, `zipf`, `hot`, `range`, `indexed-range` |
 | Relational/analytical | `joins`, `relational`, `cte`, `aggregate`, `htap` |
-| Mixed/transactions | `mixed`, `transactions`, `rollback`, `update`, `batch-update`, `write`, `contended-write`, `contended-transactions`, `long-transactions`, `deadlocks` |
+| Mixed/transactions | `mixed`, `rw-independent`, `rw-hot`, `transactions`, `rollback`, `update`, `batch-update`, `write`, `contended-write`, `contended-transactions`, `long-transactions`, `deadlocks` |
 | Ingestion/mutation | `insert`, `ingestion`, `upsert`, `delete` |
 | Relational cache lifecycle | `cache`, `cache-populate`, `cache-incremental`, `cache-refresh`, `cache-replace`, `cache-expire`, `cache-invalidate`, `cache-bulk-invalidate` |
 
@@ -47,6 +47,20 @@ Correctness baselines are captured before mutations, so an intended update
 is not incorrectly compared against an untouched seeded dataset.
 Monetary checks compare integer cents, avoiding accumulated SQLite
 floating-point representation noise.
+
+`rw-independent` reads odd-numbered accounts and atomically transfers
+between even-numbered accounts; it requires at least four base rows.
+`rw-hot` reads account 1 and transfers between accounts 1 and 2, requiring
+at least two rows. Both validate account counts and conserved total balances.
+`--fixed-read-rate` schedules independent, bounded-queue read and write
+arrival streams at a fixed read rate and a write rate derived from
+`--read-percent`. Per-stream offered and accepted counts are reported.
+The offered read stream remains fixed even when write demand increases;
+queue rejection and scheduled-arrival latency remain visible. For
+closed-loop comparisons, `--reader-workers` assigns a fixed number of worker
+threads to reads, with the remaining workers writing; achieved operation
+mix need not match the worker proportion. These controls apply only to the
+two `rw-*` workloads.
 
 `contended-write`/`contended-transactions` repeatedly target accounts 1 and 2
 instead of randomly spreading writes. `long-transactions` deliberately

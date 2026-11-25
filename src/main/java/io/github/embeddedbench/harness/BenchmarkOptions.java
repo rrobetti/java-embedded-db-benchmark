@@ -31,6 +31,9 @@ public final class BenchmarkOptions {
     double sampleInterval = 1;
     @Option(names = {"--transaction-size", "--transaction"}) Integer transactionSize;
     @Option(names = {"--request-rate", "--rate"}, description = "Requests/sec; zero selects closed-loop") double requestRate;
+    @Option(names = "--fixed-read-rate", description = "Open-loop read arrivals/sec for rw-* workloads") double fixedReadRate;
+    @Option(names = "--reader-workers", description = "Dedicated closed-loop reader workers for rw-* workloads")
+    Integer readerWorkers;
     @Option(names = "--queue-capacity", description = "Bound on waiting open-loop requests") int queueCapacity = 256;
     @Option(names = "--warmup", description = "Warmup seconds") Double warmup;
     @Option(names = "--duration", description = "Measurement seconds") Double duration;
@@ -87,7 +90,8 @@ public final class BenchmarkOptions {
                 || transactionSize < 1 || loadCommitInterval < 0 || sampleInterval < 0.1 || sampleInterval > 3600
                 || !Double.isFinite(sampleInterval) || duration <= 0 || warmup < 0 || !Double.isFinite(duration)
                 || !Double.isFinite(warmup) || maxOperations < 0 || repetitions < 1 || requestRate < 0
-                || !Double.isFinite(requestRate) || requestRate > 1_000_000 || queueCapacity < 1
+                || !Double.isFinite(requestRate) || requestRate > 1_000_000 || fixedReadRate < 0
+                || !Double.isFinite(fixedReadRate) || queueCapacity < 1
                 || childDeadline < 1 || rangeRows < 1 || readPercent < 0 || readPercent > 100
                 || analyticalPercent < 0 || analyticalPercent > 100 || duration > 14_400 || warmup > 14_400)
             throw new IllegalArgumentException("Invalid benchmark bounds/percentages; connections must not exceed threads");
@@ -98,6 +102,15 @@ public final class BenchmarkOptions {
         if (!List.of("batch", "prepared", "individual").contains(loadMode))
             throw new IllegalArgumentException("load-mode must be batch, prepared or individual");
         if (engines.isEmpty() || scenarios.isEmpty()) throw new IllegalArgumentException("Select engines and scenarios");
+        if (fixedReadRate > 0 && (requestRate > 0 || readPercent == 0
+                || fixedReadRate * 100.0 / readPercent > 1_000_000))
+            throw new IllegalArgumentException("Fixed read rate requires read-percent >0, no request-rate and total rate <=1000000");
+        if (readerWorkers != null && (readerWorkers < 0 || threadCounts.stream().anyMatch(n -> readerWorkers > n)
+                || requestRate > 0 || fixedReadRate > 0))
+            throw new IllegalArgumentException("reader-workers must fit every thread count and uses closed-loop mode");
+        if ((fixedReadRate > 0 || readerWorkers != null)
+                && scenarios.stream().anyMatch(name -> !List.of("rw-independent", "rw-hot").contains(name)))
+            throw new IllegalArgumentException("Fixed read rate and reader-workers require rw-independent or rw-hot workloads");
         for (String id : engines) safeIdentifier(id);
         for (String scenario : scenarios) safeIdentifier(scenario);
         if (memoryBytes(jvmHeap) < 32L * 1024 * 1024 || memoryBytes(memoryBudget) < 64L * 1024 * 1024)
@@ -134,7 +147,8 @@ public final class BenchmarkOptions {
         m.put("connections", connections); m.put("batchSize", batch); m.put("loadCommitInterval", loadCommitInterval);
         m.put("sampleIntervalSeconds", sampleInterval);
         m.put("transactionSize", transactionSize);
-        m.put("requestRate", requestRate); m.put("queueCapacity", queueCapacity);
+        m.put("requestRate", requestRate); m.put("fixedReadRate", fixedReadRate);
+        m.put("readerWorkers", readerWorkers); m.put("queueCapacity", queueCapacity);
         m.put("warmupSeconds", warmup); m.put("durationSeconds", duration); m.put("iterations", repetitions);
         m.put("maxOperations", maxOperations); m.put("threadGrid", threadCounts);
         m.put("seed", seed); m.put("memoryBudgetBytes", memoryBytes(memoryBudget));

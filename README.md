@@ -170,6 +170,30 @@ errors, process CPU and RSS, and the effective session topology. PGlite's
 logical workers serialize through a single physical session; they are not
 independent concurrent database sessions.
 
+### Read/write interference
+
+The interference runner tests independently accessed and hot accounts across
+the documented read/write percentages and worker counts. It reports read
+and write throughput/latency separately, along with contention, conflicts,
+timeouts and errors. For a small fixed-read-rate experiment:
+
+```bash
+bash scripts/scenarios/read-write-interference.sh --engines h2,sqlite \
+  --rows 1000 --workers 2 --read-percentages 100,95,80 \
+  --fixed-read-rate 100 --warmup 1 --duration 5 \
+  --output research-results/interference
+```
+
+PowerShell: `./scripts/scenarios/read-write-interference.ps1` accepts the
+same arguments. With `--fixed-read-rate`, reads and writes have separately
+scheduled open-loop arrivals; the write-only case uses that number as its
+total write rate. Alternatively, `--worker-groups` assigns dedicated readers
+and writers in closed-loop mode by rounding the requested worker proportion;
+the achieved mix can differ. The two modes are mutually exclusive.
+Include a 100% read baseline to calculate p95 degradation. Default settings
+schedule 256 children across all engines, patterns, worker counts and mixes;
+use `--dry-run` before executing.
+
 ### Open-loop load scalability
 
 `scripts/scenarios/load-scalability.sh` (or `.ps1`) offers point reads at

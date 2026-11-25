@@ -104,7 +104,7 @@ final class ChildRunner {
                         : "Genuine concurrent-writer deadlocks require rows>=2, workers>=2, independent connections>=2, and concurrent writer capability.");
                 if (!feasible) throw new java.sql.SQLFeatureNotSupportedException("Deadlock scenario unavailable for this execution topology");
             }
-            result.put("latencySemantics", options.requestRate > 0
+            result.put("latencySemantics", options.requestRate > 0 || options.fixedReadRate > 0
                     ? "Scheduled arrival to completion, including scheduler lateness, queueing and session contention; rejected requests excluded."
                     : "Worker submission to completion, including serialized session contention; successes only.");
             time = System.nanoTime();
@@ -240,6 +240,7 @@ final class ChildRunner {
             Map<String, Object> result, ResourceSampler sampler) throws Exception {
         try {
             var phase = PhaseRunner.run(workload, connections, workers, serialized, options, seconds, seed, sampler);
+            if (!phase.arrivalCounts().isEmpty()) result.put(key + "ArrivalCounts", phase.arrivalCounts());
             if (key.equals("warmup")) {
                 result.put(key, phase.measurements().report(phase.elapsedSeconds(), phase.offeredSeconds()));
                 phase.measurements().save(options.output, prefix, phase.elapsedSeconds());
@@ -247,6 +248,7 @@ final class ChildRunner {
             return phase;
         } catch (PhaseRunner.Failure error) {
             var phase = error.partial();
+            if (!phase.arrivalCounts().isEmpty()) result.put(key + "ArrivalCounts", phase.arrivalCounts());
             result.put(key, phase.measurements().report(phase.elapsedSeconds(), phase.offeredSeconds()));
             phase.measurements().save(options.output, prefix, phase.elapsedSeconds());
             Throwable cause = error.getCause();

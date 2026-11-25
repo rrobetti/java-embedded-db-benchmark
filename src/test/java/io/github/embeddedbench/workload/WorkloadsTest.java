@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class WorkloadsTest {
     @ParameterizedTest
     @ValueSource(strings = {"point", "zipf", "hot", "range", "indexed-range", "joins",
-            "relational", "cte", "aggregate", "mixed", "htap", "cache", "transactions", "rollback", "write",
+            "relational", "cte", "aggregate", "mixed", "rw-independent", "rw-hot", "htap", "cache", "transactions", "rollback", "write",
             "insert", "update", "delete", "batch-update", "upsert", "cache-populate",
             "cache-invalidate", "cache-bulk-invalidate", "cache-refresh", "cache-incremental",
             "cache-expire", "cache-replace", "contended-write", "contended-transactions", "long-transactions", "deadlocks"})
@@ -37,6 +37,31 @@ class WorkloadsTest {
                     assertTrue(c.getAutoCommit(), "Transaction state leaked");
                 }
                 w.validate(c);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"rw-independent", "rw-hot"})
+    void readWritePatternsUpdateOnlyTheirIntendedAccounts(String name) throws Exception {
+        try (var db = DatabaseAdapters.create("h2", "default")) {
+            db.initialize();
+            try (Connection c = db.openConnection();
+                 Workload workload = Workloads.create(name, 6, 3, 50, 0, 1, 42)) {
+                db.createSchema(c);
+                DeterministicDataset.load(c, 6, 16, 42, 4);
+                workload.prepare(c);
+                BigDecimal first = balance(c, 1), second = balance(c, 2), third = balance(c, 3);
+                assertEquals("read", workload.execute(c, new SplittableRandom(1), Workload.OperationType.READ).category());
+                assertEquals("write", workload.execute(c, new SplittableRandom(2), Workload.OperationType.WRITE).category());
+                if (name.equals("rw-hot")) {
+                    assertEquals(0, first.add(BigDecimal.ONE).compareTo(balance(c, 1)));
+                    assertEquals(0, second.subtract(BigDecimal.ONE).compareTo(balance(c, 2)));
+                } else {
+                    assertEquals(0, first.compareTo(balance(c, 1)));
+                    assertEquals(0, third.compareTo(balance(c, 3)));
+                }
+                workload.validate(c);
             }
         }
     }

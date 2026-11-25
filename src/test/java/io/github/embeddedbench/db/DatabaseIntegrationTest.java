@@ -7,6 +7,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
+import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -19,6 +20,28 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
 class DatabaseIntegrationTest {
+    @Test
+    void loaderPreservesTheOriginalFailureWhenTransactionCleanupAlsoFails() throws Exception {
+        SQLException original = new SQLException("insert failed", "08006");
+        SQLException rollback = new SQLException("rollback failed");
+        SQLException restore = new SQLException("restore failed");
+        Connection connection = (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, arguments) -> switch (method.getName()) {
+                    case "getAutoCommit" -> true;
+                    case "setAutoCommit" -> {
+                        if ((boolean) arguments[0]) throw restore;
+                        yield null;
+                    }
+                    case "prepareStatement" -> throw original;
+                    case "rollback" -> throw rollback;
+                    default -> throw new AssertionError("Unexpected method: " + method.getName());
+                });
+        SQLException actual = assertThrows(SQLException.class,
+                () -> DeterministicDataset.load(connection, 1, 1, 42, 1));
+        assertSame(original, actual);
+        assertArrayEquals(new Throwable[]{rollback, restore}, actual.getSuppressed());
+    }
+
     @ParameterizedTest(name = "{0} / {1}")
     @CsvSource({"h2,default", "hsqldb,default", "hsqldb,mvcc", "hsqldb,locks", "sqlite,default", "pglite,default"})
     void realEngineRoundTripConstraintsTransactionsAndCapabilities(String id, String profile) throws Exception {

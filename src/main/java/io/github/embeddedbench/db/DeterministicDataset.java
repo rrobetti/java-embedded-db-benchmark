@@ -44,6 +44,7 @@ public final class DeterministicDataset {
         } else {
             savepoint = connection.setSavepoint();
         }
+        Throwable failure = null;
         try {
             int effectiveBatchSize = "prepared".equals(mode) ? 0 : batchSize;
             insert(connection, "INSERT INTO customers VALUES (?,?,?,?,?)", rows, effectiveBatchSize, mode, (statement, id) -> {
@@ -89,7 +90,8 @@ public final class DeterministicDataset {
             } else {
                 connection.releaseSavepoint(savepoint);
             }
-        } catch (SQLException | RuntimeException exception) {
+        } catch (SQLException | RuntimeException | Error exception) {
+            failure = exception;
             try {
                 if (ownedTransaction) {
                     connection.rollback();
@@ -102,7 +104,14 @@ public final class DeterministicDataset {
             throw exception;
         } finally {
             if (ownedTransaction) {
-                connection.setAutoCommit(true);
+                try {
+                    connection.setAutoCommit(true);
+                } catch (SQLException | RuntimeException cleanupFailure) {
+                    if (failure == null) {
+                        throw cleanupFailure;
+                    }
+                    failure.addSuppressed(cleanupFailure);
+                }
             }
         }
     }

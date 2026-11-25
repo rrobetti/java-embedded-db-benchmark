@@ -119,6 +119,23 @@ the failed child database must not be reused. A fresh child/database is used
 for every benchmark run. Incremental commits are not guaranteed to prevent
 engine memory exhaustion.
 
+To compare single-transaction loading with 10,000-record commits using
+separate fresh JVMs and identical seeded datasets:
+
+```bash
+bash scripts/scenarios/ingestion-comparison.sh --engines h2,hsqldb,sqlite,pglite \
+  --sizes 1000,10000 --repetitions 3 --memory-budget 2g \
+  --jvm-heap 768m --output research-results/ingestion
+```
+
+The PowerShell equivalent is `scripts/scenarios/ingestion-comparison.ps1`.
+Use `--dry-run`, or repeat the same command with `--resume` and optionally
+`--rerun-failed`. Both modes retain separate manifests, raw artifacts and
+capacity reports; the top-level comparison includes failures. To exercise
+incremental commits, choose a size with more than 10,000 total records or
+adjust `--incremental-interval`. Small smoke runs cannot establish whether
+incremental commits prevent large-dataset memory failures.
+
 ### Progressive memory capacity
 
 The memory-capacity runner requires Python 3 and a built benchmark jar. It

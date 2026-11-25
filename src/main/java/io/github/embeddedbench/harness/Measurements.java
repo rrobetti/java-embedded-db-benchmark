@@ -13,6 +13,8 @@ import java.util.Locale;
 import java.util.Map;
 
 final class Measurements {
+    record Sample(long successes, long failures, long rejected, Map<String, Long> errors,
+                  Map<String, Histogram> histograms) {}
     private final Map<String, Histogram> histograms = new LinkedHashMap<>();
     private final Map<String, Long> units = new LinkedHashMap<>();
     private final long[] standardUnits = new long[4];
@@ -80,6 +82,12 @@ final class Measurements {
     synchronized void reject() {
         attempts++; rejected++;
         errors.merge("REJECTED", 1L, Long::sum);
+    }
+
+    synchronized Sample sample() {
+        var copy = new LinkedHashMap<String, Histogram>();
+        histograms.forEach((key, value) -> copy.put(key, value.copy()));
+        return new Sample(successes, failed, rejected, new LinkedHashMap<>(errors), copy);
     }
 
     synchronized void merge(Measurements other) {

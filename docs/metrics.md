@@ -54,8 +54,13 @@ swap counters. Sampling defaults to one second and can be changed with
 boundaries. CPU load fractions are JVM/OS-provided recent estimates, not
 dedicated CPU quotas. Direct buffers are not all native allocations; WASM
 memory is explicitly unavailable rather than inferred from RSS. Short spikes
-can be missed. Monitoring does not provide per-interval operation or latency
-data, supervisor process time series, or complete native-memory attribution.
+can be missed. Warmup and measurement samples include interval counts,
+throughput and success-latency percentiles by operation category, as well as
+failed and rejected counts. These are completion-window statistics: pending
+open-loop requests are not counted until completion or rejection. Interval
+histograms are snapshots of worker-local cumulative histograms and are not
+mixed across phases. Monitoring does not provide supervisor process time
+series or complete native-memory attribution.
 Deletion is not compaction or proof that allocated pages were returned to
 the OS. CPU/GC/I/O deltas refer to measurement, not startup/load. Normalized
 throughput divides by reported logical processors or deterministic logical

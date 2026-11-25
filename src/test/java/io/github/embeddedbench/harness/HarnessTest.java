@@ -271,6 +271,36 @@ class HarnessTest {
         assertTrue(loading >= 3, "phase boundaries and periodic samples must be recorded");
     }
 
+    @Test void samplerReportsIntervalOperationsAndIndependentLatencyHistograms() throws Exception {
+        Path file = directory().resolve("performance.jsonl");
+        var measurements = new Measurements();
+        try (var sampler = new ResourceSampler(file, 0.1)) {
+            sampler.phase("measurement");
+            sampler.startPerformance(List.of(measurements));
+            measurements.success("read", 1, 1_000);
+            sampler.phase("measurement");
+            measurements.success("write", 1, 90_000);
+            measurements.failure(new java.sql.SQLTimeoutException("timeout"));
+            measurements.reject();
+            sampler.stopPerformance();
+        }
+        var intervals = Files.readAllLines(file).stream().map(Json::decode).map(value -> (Map<?, ?>) value)
+                .map(value -> (Map<?, ?>) value.get("performance")).filter(java.util.Objects::nonNull).toList();
+        assertEquals(2, intervals.size());
+        assertEquals(1L, intervals.get(0).get("successes"));
+        assertEquals(1L, intervals.get(1).get("successes"));
+        assertEquals(1L, intervals.get(1).get("failures"));
+        assertEquals(1L, intervals.get(1).get("rejected"));
+        var first = (Map<?, ?>) intervals.get(0).get("categories");
+        var second = (Map<?, ?>) intervals.get(1).get("categories");
+        assertEquals(1L, ((Map<?, ?>) first.get("read")).get("count"));
+        assertEquals(0L, ((Map<?, ?>) first.get("write")).get("count"));
+        assertEquals(1L, ((Map<?, ?>) second.get("write")).get("count"));
+        assertEquals(0L, ((Map<?, ?>) second.get("read")).get("count"));
+        assertTrue(((Number) ((Map<?, ?>) second.get("write")).get("p99Nanos")).longValue() >= 90_000);
+        assertEquals(1L, ((Map<?, ?>) intervals.get(1).get("errors")).get("TIMEOUT"));
+    }
+
     @Test void realH2ChildValidatesAndDeletesDataset() throws Exception {
         BenchmarkOptions options = options();
         options.output = directory(); options.rows = 10L; options.payload = 16; options.duration = 1.0;
@@ -296,6 +326,12 @@ class HarnessTest {
         }
         assertTrue(phases.containsAll(List.of("initialization", "loading", "validation",
                 "warmup", "measurement", "deletion", "shutdown")));
+        long sampledSuccesses = samples.stream().map(Json::decode).map(sample -> (Map<?, ?>) sample)
+                .filter(sample -> "measurement".equals(sample.get("phase")))
+                .map(sample -> (Map<?, ?>) sample.get("performance"))
+                .filter(java.util.Objects::nonNull)
+                .mapToLong(sample -> ((Number) sample.get("successes")).longValue()).sum();
+        assertEquals(((Map<?, ?>) result.get("measurement")).get("successes"), sampledSuccesses);
     }
 
     @Test void reportingEscapesHtmlAndCsv() {

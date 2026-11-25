@@ -145,7 +145,7 @@ final class ChildRunner {
             for (int i = 1; i < actualConnections; i++) connections.add(adapter.openConnection());
             sampler.phase("warmup");
             executePhase(workload, connections, workers, serialized, options, options.warmup,
-                    options.seed ^ 0x123456789abcdefL, "warmup", "warmup-latency", result);
+                    options.seed ^ 0x123456789abcdefL, "warmup", "warmup-latency", result, sampler);
             if (options.warmup > 0) {
                 sampler.phase("validation");
                 workload.validate(setup);
@@ -171,7 +171,7 @@ final class ChildRunner {
             stages.put("measurementBaseline", measuredBaseline);
             sampler.phase("measurement");
             var steady = executePhase(workload, connections, workers, serialized, options, options.duration, options.seed,
-                    "measurement", "latency", result);
+                    "measurement", "latency", result, sampler);
             Map<String, Object> steadyResources = Resources.snapshot(databaseDirectory);
             stages.put("steady", steadyResources);
             result.put("resourceDeltas", deltas(measuredBaseline, steadyResources, steady.elapsedSeconds()));
@@ -237,9 +237,9 @@ final class ChildRunner {
 
     private static PhaseRunner.Result executePhase(Workload workload, java.util.List<Connection> connections, int workers,
             boolean serialized, BenchmarkOptions options, double seconds, long seed, String key, String prefix,
-            Map<String, Object> result) throws Exception {
+            Map<String, Object> result, ResourceSampler sampler) throws Exception {
         try {
-            var phase = PhaseRunner.run(workload, connections, workers, serialized, options, seconds, seed);
+            var phase = PhaseRunner.run(workload, connections, workers, serialized, options, seconds, seed, sampler);
             if (key.equals("warmup")) {
                 result.put(key, phase.measurements().report(phase.elapsedSeconds(), phase.offeredSeconds()));
                 phase.measurements().save(options.output, prefix, phase.elapsedSeconds());

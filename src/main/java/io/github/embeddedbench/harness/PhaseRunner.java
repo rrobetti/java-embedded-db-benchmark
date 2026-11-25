@@ -29,6 +29,11 @@ final class PhaseRunner {
 
     static Result run(Workload workload, List<Connection> connections, int workers, boolean serialized,
                       BenchmarkOptions options, double seconds, long seed) throws Exception {
+        return run(workload, connections, workers, serialized, options, seconds, seed, null);
+    }
+
+    static Result run(Workload workload, List<Connection> connections, int workers, boolean serialized,
+                      BenchmarkOptions options, double seconds, long seed, ResourceSampler sampler) throws Exception {
         Measurements measurements = new Measurements();
         if (seconds == 0) return new Result(measurements, 0, 0);
         long durationNanos = (long) (seconds * 1_000_000_000L);
@@ -100,6 +105,10 @@ final class PhaseRunner {
             threads.add(thread);
             thread.start();
         }
+        var sources = new ArrayList<>(workerMeasurements);
+        sources.add(measurements);
+        if (sampler != null) sampler.startPerformance(sources);
+        try (AutoCloseable tracking = sampler == null ? () -> {} : sampler::stopPerformance) {
         ready.await();
         long begin = System.nanoTime();
         epoch.set(begin);
@@ -131,12 +140,14 @@ final class PhaseRunner {
             throw new java.sql.SQLTimeoutException("Workers exceeded phase drain deadline");
         }
         long end = System.nanoTime();
+        if (sampler != null) sampler.stopPerformance();
         for (Measurements local : workerMeasurements) measurements.merge(local);
         Result result = new Result(measurements, (end - begin) / 1_000_000_000.0,
                 Math.max(0, Math.min(offerEnd, end) - begin) / 1_000_000_000.0);
         Throwable failure = fatal.get();
         if (failure != null) throw new Failure(failure, result);
         return result;
+        }
     }
 
     private static boolean claim(AtomicLong issued, long maximum) {

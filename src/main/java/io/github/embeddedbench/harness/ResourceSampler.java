@@ -9,7 +9,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import org.HdrHistogram.Histogram;
 
 /** Samples process and JVM counters without traversing database files. */
 final class ResourceSampler implements AutoCloseable {
@@ -19,6 +23,9 @@ final class ResourceSampler implements AutoCloseable {
     private volatile String phase = "initialization";
     private volatile boolean stopping;
     private IOException failure;
+    private List<Measurements> performanceSources = List.of();
+    private List<Measurements.Sample> previous = List.of();
+    private long previousNanos;
 
     ResourceSampler(Path path, double intervalSeconds) throws IOException {
         writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8);
@@ -32,6 +39,20 @@ final class ResourceSampler implements AutoCloseable {
     synchronized void phase(String phase) throws IOException {
         this.phase = phase;
         sample();
+    }
+
+    synchronized void startPerformance(List<Measurements> sources) throws IOException {
+        if (!performanceSources.isEmpty()) throw new IllegalStateException("Performance phase already active");
+        performanceSources = List.copyOf(sources);
+        previous = performanceSources.stream().map(Measurements::sample).toList();
+        previousNanos = System.nanoTime();
+    }
+
+    synchronized void stopPerformance() throws IOException {
+        if (!performanceSources.isEmpty()) {
+            try { sample(); }
+            finally { performanceSources = List.of(); previous = List.of(); }
+        }
     }
 
     private void run() {
@@ -91,9 +112,59 @@ final class ResourceSampler implements AutoCloseable {
             for (String key : new String[]{"processCpuNanos", "processCpuLoad", "systemCpuLoad",
                     "availableMemoryBytes", "usedSwapBytes"}) m.put(key, null);
         }
+        m.put("performance", performance());
         writer.write(Json.encode(m));
         writer.newLine();
         writer.flush();
+    }
+
+    private Map<String, Object> performance() {
+        if (performanceSources.isEmpty()) return null;
+        long now = System.nanoTime();
+        double seconds = (now - previousNanos) / 1_000_000_000.0;
+        long successes = 0, failures = 0, rejected = 0;
+        var errors = new LinkedHashMap<String, Long>();
+        var histograms = new LinkedHashMap<String, Histogram>();
+        var current = new ArrayList<Measurements.Sample>();
+        for (int i = 0; i < performanceSources.size(); i++) {
+            var sample = performanceSources.get(i).sample();
+            var old = previous.get(i);
+            current.add(sample);
+            successes += sample.successes() - old.successes();
+            failures += sample.failures() - old.failures();
+            rejected += sample.rejected() - old.rejected();
+            sample.errors().forEach((key, value) -> errors.merge(key,
+                    value - old.errors().getOrDefault(key, 0L), Long::sum));
+            sample.histograms().forEach((key, histogram) -> {
+                Histogram delta = histogram.copy();
+                Histogram prior = old.histograms().get(key);
+                if (prior != null) delta.subtract(prior);
+                histograms.computeIfAbsent(key, ignored -> {
+                    Histogram h = new Histogram(3);
+                    h.setAutoResize(true);
+                    return h;
+                }).add(delta);
+            });
+        }
+        previous = current;
+        previousNanos = now;
+        var result = new LinkedHashMap<String, Object>();
+        result.put("windowSeconds", seconds);
+        result.put("successes", successes);
+        result.put("failures", failures);
+        result.put("rejected", rejected);
+        result.put("errors", errors);
+        result.put("throughputOpsPerSecond", seconds > 0 ? successes / seconds : null);
+        var categories = new LinkedHashMap<String, Object>();
+        histograms.forEach((key, histogram) -> {
+            var stats = new LinkedHashMap<String, Object>();
+            stats.put("count", histogram.getTotalCount());
+            stats.put("throughputOpsPerSecond", seconds > 0 ? histogram.getTotalCount() / seconds : null);
+            stats.putAll(Measurements.histogramStats(histogram));
+            categories.put(key, stats);
+        });
+        result.put("categories", categories);
+        return result;
     }
 
     private static Long nonnegative(long value) { return value < 0 ? null : value; }

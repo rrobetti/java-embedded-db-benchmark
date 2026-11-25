@@ -158,7 +158,17 @@ def run_supervisor(command, directory):
             started = time.monotonic()
             while True:
                 try:
-                    return process.wait(timeout=10)
+                    exit_code = process.wait(timeout=10)
+                    if not (directory / "report.json").is_file():
+                        log.flush()
+                        with (directory / "supervisor.log").open("rb") as source:
+                            source.seek(0, os.SEEK_END)
+                            source.seek(max(0, source.tell() - 4096))
+                            details = source.read().decode("utf-8", errors="replace").strip()
+                        print(f"Benchmark exited with code {exit_code} without report.json; "
+                              f"see {directory / 'supervisor.log'}"
+                              + (f":\n{details}" if details else ""), file=sys.stderr, flush=True)
+                    return exit_code
                 except subprocess.TimeoutExpired:
                     print_progress(directory, time.monotonic() - started)
         except BaseException:

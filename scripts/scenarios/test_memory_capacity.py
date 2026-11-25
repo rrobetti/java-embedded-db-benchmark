@@ -2,13 +2,36 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+import sys
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 
 import memory_capacity as capacity
 
 
 class CapacityTest(unittest.TestCase):
+    def test_missing_report_displays_supervisor_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            output = StringIO()
+            with redirect_stderr(output):
+                status = capacity.run_supervisor(
+                    [sys.executable, "-c", "import sys; print('startup error'); sys.exit(2)"], path)
+            self.assertEqual(status, 2)
+            self.assertIn("code 2 without report.json", output.getvalue())
+            self.assertIn("startup error", output.getvalue())
+            self.assertIn(str(path / "supervisor.log"), output.getvalue())
+
+    def test_failure_with_report_does_not_replace_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "report.json").write_text("{}", encoding="utf-8")
+            output = StringIO()
+            with redirect_stderr(output):
+                status = capacity.run_supervisor([sys.executable, "-c", "raise SystemExit(1)"], path)
+            self.assertEqual(status, 1)
+            self.assertEqual(output.getvalue(), "")
+
     def test_memory_summary_uses_sampled_phases_and_seven_records(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

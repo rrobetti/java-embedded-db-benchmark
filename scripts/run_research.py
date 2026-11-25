@@ -295,6 +295,18 @@ def identity(args, schedule, cpu, scope):
         if os.environ.get("JAVA_HOME") else shutil.which("java")
     if not java:
         raise RuntimeError("Java not found")
+    version = common.command_output([java, "-version"])
+    match = re.search(r'version "(\d+)(?:[."+_-]|$)', version)
+    if not match or int(match.group(1)) < 25:
+        raise RuntimeError(f"Research requires JDK 25 or later; set JAVA_HOME or PATH to it.\n{version}")
+    try:
+        help_text = common.command_output([java, "-jar", str(jar), "--help"])
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Cannot start {jar} with {java}: {(error.stderr or error.stdout or '').strip()}") from error
+    missing = [option for option in ("--load-commit-interval", "--sample-interval", "--inactivity-timeout")
+               if option not in help_text]
+    if missing:
+        raise RuntimeError(f"Benchmark jar lacks {', '.join(missing)}; rebuild target/benchmark.jar from this checkout")
     config = {key: value for key, value in vars(args).items()
               if key not in ("output", "resume", "rerun_failed", "dry_run", "inside_systemd_scope")}
     config.update({"plan": schedule, "cpu": cpu, "jarSha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
@@ -304,7 +316,7 @@ def identity(args, schedule, cpu, scope):
                                       for name, module in MODULES.items()},
                    "gitCommit": common.command_output(["git", "--no-pager", "rev-parse", "HEAD"]),
                    "gitDirty": common.command_output(["git", "--no-pager", "status", "--porcelain", "--untracked-files=no"]),
-                   "javaVersion": common.command_output([java, "-version"]),
+                   "javaVersion": version,
                    "pythonVersion": platform.python_version(),
                    "machine": {"os": platform.platform(), "architecture": platform.machine(),
                                "logicalProcessors": os.cpu_count(), "node": platform.node()}})

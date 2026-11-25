@@ -8,6 +8,38 @@ import run_research as research
 
 
 class ResearchTest(unittest.TestCase):
+    def test_preflight_rejects_old_java_and_stale_jar(self):
+        args = research.parse_args([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "target").mkdir()
+            (root / "target" / "benchmark.jar").write_bytes(b"jar")
+            with mock.patch.object(research.common, "ROOT", root), \
+                    mock.patch.dict(research.os.environ, {"JAVA_HOME": "/jdk"}), \
+                    mock.patch.object(research.common, "command_output", return_value='openjdk version "17.0.1"'):
+                with self.assertRaisesRegex(RuntimeError, "JDK 25 or later"):
+                    research.identity(args, [], {}, {})
+            with mock.patch.object(research.common, "ROOT", root), \
+                    mock.patch.dict(research.os.environ, {"JAVA_HOME": "/jdk"}), \
+                    mock.patch.object(research.common, "command_output",
+                                      side_effect=['openjdk version "25.0.1"', "--sample-interval"]):
+                with self.assertRaisesRegex(RuntimeError, "rebuild target/benchmark.jar"):
+                    research.identity(args, [], {}, {})
+
+    def test_preflight_reports_jar_startup_error(self):
+        args = research.parse_args([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "target").mkdir()
+            (root / "target" / "benchmark.jar").write_bytes(b"jar")
+            error = research.subprocess.CalledProcessError(1, ["java"], stderr="Invalid or corrupt jarfile")
+            with mock.patch.object(research.common, "ROOT", root), \
+                    mock.patch.dict(research.os.environ, {"JAVA_HOME": "/jdk"}), \
+                    mock.patch.object(research.common, "command_output",
+                                      side_effect=['openjdk version "25"', error]):
+                with self.assertRaisesRegex(RuntimeError, "Invalid or corrupt jarfile"):
+                    research.identity(args, [], {}, {})
+
     def test_quick_plan_counts_and_exclusions(self):
         args = research.parse_args(["--engines", "h2", "--sizes", "10", "--rows", "10",
                                     "--workers", "1", "--exclude-expensive"])

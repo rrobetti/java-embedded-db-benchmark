@@ -111,6 +111,11 @@ affinity; use a new directory when these change. Individual scenario reports
 are written as runs finish, and the consolidated reports update after each
 scenario. Long-running child processes print elapsed time, phase, executed
 load records, child RSS/peak RSS and CPU load approximately every ten seconds.
+The runner uses `JAVA_HOME` when set, otherwise `java` on `PATH`; use JDK 25
+or later and rebuild the jar after changing the checkout. If a benchmark
+exits before producing a report, inspect the attempt's `supervisor.log`.
+After changing Java, the jar or the runner, start with a new output directory
+because existing manifests cannot be resumed with a different identity.
 The PowerShell entry point is `scripts/run-research.ps1`.
 
 `research.json`, `.csv`, `.md` and `.html` preserve scenario evidence and

@@ -83,9 +83,22 @@ bash scripts/run-research.sh --level standard --memory-budget 6g --jvm-heap 2g \
 On Linux, `--cpu-cores` restricts the supervisor and descendants to that
 many inherited available CPU IDs using process affinity; it is not a CPU
 quota and an inherited cgroup quota may be more restrictive. `--memory-budget`
-is a sampled watchdog, **not** a hard OS limit; an external systemd/cgroup
-scope is described in [limitations](docs/limitations.md). Other platforms
-reject `--cpu-cores` when affinity enforcement is unavailable.
+is a sampled watchdog, **not** a hard OS limit. On a Linux workstation with
+delegated cgroup v2 controllers and a user systemd instance, opt into a hard
+scope for the whole suite, for example:
+
+```bash
+bash scripts/run-research.sh --level standard --exclude-endurance \
+  --memory-budget 6g --jvm-heap 2g --systemd-memory-max 8g \
+  --systemd-cpu-quota 800 --output research-results/isolated
+```
+
+The scope starts without privilege elevation and is verified before running;
+if unavailable or unenforced, the runner fails without an unbounded
+fallback. The manifest distinguishes requested, locally enforced and
+observable effective limits; an unreadable ancestor limit is unavailable.
+Other platforms reject `--cpu-cores` when affinity enforcement is unavailable
+and do not support the systemd options. See [limitations](docs/limitations.md).
 
 Use `--scenarios`, `--engines`, `--sizes`, `--rows`, `--workers`,
 `--repetitions`, `--warmup`, `--duration`, and `--endurance-duration` to

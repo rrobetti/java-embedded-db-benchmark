@@ -38,6 +38,14 @@ not hard limits; macOS fallback does not provide peak RSS.
 
 For a genuine hard limit, launch the whole script externally in a configured
 cgroup/container/job object or an administrator-provisioned systemd scope.
+Alternatively, the master research runner can request an unprivileged user
+scope with `--systemd-memory-max 2g --systemd-cpu-quota 200` on Linux.
+It requires a running user systemd instance and delegated cgroup v2 memory
+and CPU controllers; it verifies the local cgroup limits before running and
+fails without fallback if the scope or verification is unavailable. The
+research manifest records configured and verified local limits and the
+most restrictive readable ancestor limits, or null when the latter cannot
+be determined. `--cpu-cores` is a separate affinity constraint, not a quota.
 For example, on a Linux host whose user systemd instance delegates memory
 and CPU controllers:
 

@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,9 @@ def parse_args(argv=None):
     parser.add_argument("--memory-budget", default="4g")
     parser.add_argument("--jvm-heap", default="768m")
     parser.add_argument("--cpu-cores", type=int, help="Enforce an integer CPU affinity limit on Linux")
+    parser.add_argument("--systemd-memory-max", help="Enforce a Linux user-scope memory limit, e.g. 6g")
+    parser.add_argument("--systemd-cpu-quota", type=float, help="Enforce a Linux user-scope CPU quota as a percentage")
+    parser.add_argument("--inside-systemd-scope", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--repetitions", type=int)
     parser.add_argument("--warmup", type=float)
     parser.add_argument("--duration", type=float, help="Override ordinary measurement seconds")
@@ -94,7 +98,95 @@ def parse_args(argv=None):
         parser.error("durations must be positive; endurance must exceed 0.1 seconds")
     if args.rerun_failed and not args.resume:
         parser.error("--rerun-failed requires --resume")
+    if args.systemd_memory_max is not None:
+        try:
+            memory_bytes(args.systemd_memory_max)
+        except ValueError as error:
+            parser.error(str(error))
+    if args.systemd_cpu_quota is not None and (not math.isfinite(args.systemd_cpu_quota)
+                                                or not 0 < args.systemd_cpu_quota <= 100000):
+        parser.error("systemd CPU quota must be a positive finite percentage")
     return args
+
+
+def memory_bytes(value):
+    match = re.fullmatch(r"([1-9][0-9]*)([kKmMgG]?)", value)
+    if not match:
+        raise ValueError("systemd memory limit must be a positive integer with optional k/m/g suffix")
+    amount = int(match.group(1)) * {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[match.group(2).lower()]
+    if amount > 2 ** 63 - 1:
+        raise ValueError("systemd memory limit is too large")
+    return amount
+
+
+def cgroup_v2_path():
+    lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
+    group = next((line[3:] for line in lines if line.startswith("0::")), None)
+    if group is None:
+        raise RuntimeError("Unified cgroup v2 membership is unavailable")
+    for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+        if " - cgroup2 " not in line:
+            continue
+        fields = line.split()
+        root = Path(fields[3].replace("\\040", " "))
+        mount = Path(fields[4].replace("\\040", " "))
+        try:
+            relative = Path(group).relative_to(root)
+        except ValueError:
+            continue
+        directory = mount / relative
+        if directory.is_dir():
+            return directory, mount
+    raise RuntimeError("Current cgroup v2 directory is unavailable")
+
+
+def verify_scope(args, directory, mount):
+    requested_memory = memory_bytes(args.systemd_memory_max) if args.systemd_memory_max else None
+    requested_cpu = args.systemd_cpu_quota / 100 if args.systemd_cpu_quota is not None else None
+    def read_memory(path):
+        value = (path / "memory.max").read_text(encoding="utf-8").strip()
+        return None if value == "max" else int(value)
+    def read_cpu(path):
+        quota, period = (path / "cpu.max").read_text(encoding="utf-8").split()
+        return None if quota == "max" else int(quota) / int(period)
+    local_memory = read_memory(directory) if requested_memory is not None else None
+    local_cpu = read_cpu(directory) if requested_cpu is not None else None
+    if requested_memory is not None and (local_memory is None or local_memory > requested_memory):
+        raise RuntimeError("Requested systemd memory limit is not enforced in the current cgroup")
+    if requested_cpu is not None and (local_cpu is None or local_cpu > requested_cpu + 1e-9):
+        raise RuntimeError("Requested systemd CPU quota is not enforced in the current cgroup")
+    ancestors = [directory, *directory.parents]
+    if mount not in ancestors:
+        raise RuntimeError("Current cgroup is outside the cgroup mount")
+    ancestors = ancestors[:ancestors.index(mount) + 1]
+    def effective(reader, requested):
+        if requested is None:
+            return None
+        try:
+            values = [value for path in ancestors if (value := reader(path)) is not None]
+        except (OSError, ValueError, ZeroDivisionError):
+            return None
+        return min(values) if values else None
+    return {"mechanism": "systemd user scope, cgroup v2", "memoryEnforced": requested_memory is not None,
+            "cpuEnforced": requested_cpu is not None, "configuredMemoryBytes": requested_memory,
+            "localMemoryMaxBytes": local_memory, "effectiveMemoryMaxBytes": effective(read_memory, requested_memory),
+            "configuredCpuQuotaCores": requested_cpu, "localCpuQuotaCores": local_cpu,
+            "effectiveCpuQuotaCores": effective(read_cpu, requested_cpu)}
+
+
+def launch_scope(args, argv):
+    if sys.platform != "linux" or not shutil.which("systemd-run"):
+        raise RuntimeError("systemd user-scope limits require Linux and systemd-run")
+    command = ["systemd-run", "--user", "--scope", "--quiet", "--no-ask-password"]
+    if args.systemd_memory_max:
+        command += ["-p", f"MemoryMax={memory_bytes(args.systemd_memory_max)}"]
+    if args.systemd_cpu_quota is not None:
+        command += ["-p", f"CPUQuota={args.systemd_cpu_quota}%"]
+    command += [sys.executable, str(Path(__file__).resolve()), *argv, "--inside-systemd-scope"]
+    status = subprocess.run(command, check=False).returncode
+    if status:
+        print("research: scope launch or scoped research failed; no unbounded fallback was started", file=sys.stderr)
+    return status
 
 
 def plan(args):
@@ -192,7 +284,7 @@ def configure_cpu(args):
             "effectiveCpuIds": effective}
 
 
-def identity(args, schedule, cpu):
+def identity(args, schedule, cpu, scope):
     jar = common.ROOT / "target" / "benchmark.jar"
     if not jar.is_file():
         raise RuntimeError("Build target/benchmark.jar first with ./mvnw package")
@@ -201,8 +293,9 @@ def identity(args, schedule, cpu):
     if not java:
         raise RuntimeError("Java not found")
     config = {key: value for key, value in vars(args).items()
-              if key not in ("output", "resume", "rerun_failed", "dry_run")}
+              if key not in ("output", "resume", "rerun_failed", "dry_run", "inside_systemd_scope")}
     config.update({"plan": schedule, "cpu": cpu, "jarSha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
+                   "systemdScope": scope,
                    "runnerSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                    "scenarioSha256": {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
                                       for name, module in MODULES.items()},
@@ -294,6 +387,7 @@ def write_reports(output, manifest):
             except (OSError, ValueError) as error:
                 report_errors[name] = str(error)
     report = {"identity": manifest["identity"], "scenarios": manifest["scenarios"], "evidence": evidence,
+              "scopeAttempts": manifest.get("scopeAttempts", []),
               "reportErrors": report_errors,
               "caveats": "Results describe only the tested configurations and valid runs. Incomplete, failed "
               "and unsupported observations must not be ranked. RSS includes the process, not only the database; "
@@ -378,8 +472,16 @@ def execute(args):
             print("    " + " ".join(item["options"]), flush=True)
     if args.dry_run:
         return 0
+    scope_path = None
+    scope = {"mechanism": "none", "memoryEnforced": False, "cpuEnforced": False}
+    if args.systemd_memory_max or args.systemd_cpu_quota is not None:
+        if not args.inside_systemd_scope:
+            raise RuntimeError("Requested systemd limits require launching through the user scope")
+        directory, mount = cgroup_v2_path()
+        scope_path = str(directory)
+        scope = verify_scope(args, directory, mount)
     cpu = configure_cpu(args)
-    config = identity(args, schedule, cpu)
+    config = identity(args, schedule, cpu, scope)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     path = output / "research-manifest.json"
@@ -392,7 +494,10 @@ def execute(args):
     elif args.resume:
         raise RuntimeError("No research manifest exists to resume")
     else:
-        manifest = {"identity": config, "scenarios": {}}
+        manifest = {"identity": config, "scenarios": {}, "scopeAttempts": []}
+        common.write_json(path, manifest)
+    if scope_path is not None:
+        manifest.setdefault("scopeAttempts", []).append({"path": scope_path, "startedAt": time.time()})
         common.write_json(path, manifest)
     write_reports(output, manifest)
     for item in schedule:
@@ -437,9 +542,14 @@ def execute(args):
     return 1 if any(entry["status"] != "OK" for entry in manifest["scenarios"].values()) else 0
 
 
-def main():
+def main(argv=None):
     try:
-        return execute(parse_args())
+        arguments = list(sys.argv[1:] if argv is None else argv)
+        args = parse_args(arguments)
+        if (args.systemd_memory_max or args.systemd_cpu_quota is not None) and not args.inside_systemd_scope \
+                and not args.dry_run:
+            return launch_scope(args, arguments)
+        return execute(args)
     except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as error:
         print(f"research: {error}", file=sys.stderr)
         return 2

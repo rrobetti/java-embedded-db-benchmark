@@ -32,6 +32,36 @@ class ResearchTest(unittest.TestCase):
         entry = research.plan(args)[0]
         self.assertEqual(entry["count"], 2 * 4 * 8 * 3)
 
+    def test_scope_verification_uses_restrictive_ancestor_limits(self):
+        args = research.parse_args(["--systemd-memory-max", "2g", "--systemd-cpu-quota", "150"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            leaf = root / "scope"
+            leaf.mkdir()
+            (root / "memory.max").write_text(str(1024 ** 3), encoding="utf-8")
+            (root / "cpu.max").write_text("100000 100000", encoding="utf-8")
+            (leaf / "memory.max").write_text(str(2 * 1024 ** 3), encoding="utf-8")
+            (leaf / "cpu.max").write_text("150000 100000", encoding="utf-8")
+            limits = research.verify_scope(args, leaf, root)
+            self.assertTrue(limits["memoryEnforced"])
+            self.assertTrue(limits["cpuEnforced"])
+            self.assertEqual(limits["effectiveMemoryMaxBytes"], 1024 ** 3)
+            self.assertEqual(limits["effectiveCpuQuotaCores"], 1)
+            (root / "cpu.max").unlink()
+            self.assertIsNone(research.verify_scope(args, leaf, root)["effectiveCpuQuotaCores"])
+            (leaf / "memory.max").write_text("max", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "not enforced"):
+                research.verify_scope(args, leaf, root)
+
+    def test_scope_failure_has_no_unbounded_fallback(self):
+        args = research.parse_args(["--systemd-memory-max", "2g"])
+        with mock.patch.object(research.shutil, "which", return_value="/usr/bin/systemd-run"), \
+                mock.patch.object(research.subprocess, "run", return_value=mock.Mock(returncode=1)) as run:
+            self.assertEqual(research.launch_scope(args, ["--systemd-memory-max", "2g"]), 1)
+        command = run.call_args.args[0]
+        self.assertIn("MemoryMax=2147483648", command)
+        self.assertIn("--inside-systemd-scope", command)
+
     def test_classifies_unsupported_incorrect_and_incomplete(self):
         self.assertEqual(research.classification({"status": "FAILED", "error": "UNSUPPORTED"}), "UNSUPPORTED")
         self.assertEqual(research.classification({"status": "FAILED", "error": "CORRECTNESS"}), "INCORRECT")

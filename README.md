@@ -49,6 +49,61 @@ bash scripts/benchmark.sh --offline --profile smoke \
 downloads when an absent jar must be built; the Maven distribution and all
 dependencies must already be cached. PowerShell setup uses `-Offline`.
 
+## Research suite
+
+The research scenarios address five questions: records per GiB of RAM,
+concurrent-reader scalability, read/write interference, reader disruption
+during cache refresh, and stability over prolonged operation. Build the jar
+first; Python 3 orchestrates sequential, fresh-JVM runs on one machine.
+
+```bash
+bash scripts/run-research.sh --level quick --dry-run
+bash scripts/run-research.sh --level quick --engines h2,hsqldb,sqlite,pglite \
+  --output research-results/quick
+```
+
+`--level quick` is a small implementation check. `standard` uses 100,000
+base rows, representative workload/concurrency selections, three repetitions
+and one hour per endurance run. `comprehensive` explicitly selects larger
+capacity and concurrency grids; it is never selected by default and can
+take a very long time. The printed run count is a maximum because capacity
+tests stop increasing sizes after failure. The time estimate assumes planned
+runs complete and excludes loading, validation and refresh execution.
+
+For an otherwise idle Linux workstation with approximately 32 GiB RAM and
+12 logical CPUs, preserve host headroom, inspect the plan, and start with:
+
+```bash
+bash scripts/run-research.sh --level standard --memory-budget 6g --jvm-heap 2g \
+  --cpu-cores 8 --exclude-endurance --dry-run
+bash scripts/run-research.sh --level standard --memory-budget 6g --jvm-heap 2g \
+  --cpu-cores 8 --exclude-endurance --output research-results/standard
+```
+
+On Linux, `--cpu-cores` restricts the supervisor and descendants to that
+many inherited available CPU IDs using process affinity; it is not a CPU
+quota and an inherited cgroup quota may be more restrictive. `--memory-budget`
+is a sampled watchdog, **not** a hard OS limit; an external systemd/cgroup
+scope is described in [limitations](docs/limitations.md). Other platforms
+reject `--cpu-cores` when affinity enforcement is unavailable.
+
+Use `--scenarios`, `--engines`, `--sizes`, `--rows`, `--workers`,
+`--repetitions`, `--warmup`, `--duration`, and `--endurance-duration` to
+select and override the plan. `--exclude-expensive` omits load scalability,
+reclamation and the ingestion comparison; it does not cap capacity sizes.
+`--exclude-endurance` omits long-running stability tests. Repeat the same
+command with `--resume`, optionally adding `--rerun-failed`. Manifests
+check the plan, runner and jar hashes, Git state, machine and effective CPU
+affinity; use a new directory when these change. Individual scenario reports
+are written as runs finish, and the consolidated reports update after each
+scenario. The PowerShell entry point is `scripts/run-research.ps1`.
+
+`research.json`, `.csv`, `.md` and `.html` preserve scenario evidence and
+link to offline charts and raw artifacts. Missing, failed, unsupported and
+incorrect results are not successful comparisons. Short runs, unpaired
+configurations, missing metrics and a configured capacity upper bound do
+not justify rankings or absolute capacity claims.
+
 ## Profiles and controls
 
 The default `quick` uses 1,000 rows, 128-byte payloads, one worker/connection,

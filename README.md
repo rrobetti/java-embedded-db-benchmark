@@ -62,6 +62,11 @@ defaults to 512m.
 The 4g budget provides admission headroom for the `full` dataset. The effective
 limit is still capped at half the host RAM and 80% of a detected container
 memory limit; passing admission does not guarantee a run will fit in memory.
+In particular, HSQLDB can exhaust the Java heap with the `full` dataset, even
+when the heap is larger than the default. Increase `--jvm-heap` for all engines
+in the comparison and set `--memory-budget` high enough for the heap, native
+memory and supervisor, within the available host/container memory, or reduce
+`--rows`. The memory budget alone does not increase the child heap.
 
 | Profile | Rows | Warmup seconds | Measurement seconds | Fresh-JVM iterations |
 |---|---:|---:|---:|---:|
@@ -89,6 +94,9 @@ binary suffixes. `--iterations` means independent fresh-JVM repetitions and must
 `--rate 0` selects closed-loop; positive rates select bounded open-loop.
 `--repetitions` is an alias for `--iterations`; `--max-operations 0` means
 duration-only, while positive values bound attempts per phase.
+`--child-deadline` limits each individual child in seconds, including loading
+and validation, not the whole suite. The default full suite runs 40 children;
+large PGlite loads can be slow, so use fewer rows and iterations for diagnosis.
 `--threads 1,4,8` runs a concurrency grid; omit `--connections` to match each
 worker count, or set a connection count no larger than the smallest grid value.
 Connections cannot exceed workers. `auto` uses a bounded pool when fewer

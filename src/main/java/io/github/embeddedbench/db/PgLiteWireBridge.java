@@ -1,5 +1,7 @@
 package io.github.embeddedbench.db;
 
+import org.slf4j.LoggerFactory;
+
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
@@ -87,6 +89,7 @@ final class PgLiteWireBridge implements AutoCloseable {
             if (!closed) {
                 failure = exception instanceof InvocationTargetException invocation
                         ? invocation.getCause() : exception;
+                LoggerFactory.getLogger(PgLiteWireBridge.class).error("PGlite wire bridge failed", failure);
             }
         }
     }

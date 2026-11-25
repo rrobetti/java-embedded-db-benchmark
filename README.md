@@ -119,6 +119,42 @@ the failed child database must not be reused. A fresh child/database is used
 for every benchmark run. Incremental commits are not guaranteed to prevent
 engine memory exhaustion.
 
+### Progressive memory capacity
+
+The memory-capacity runner requires Python 3 and a built benchmark jar. It
+tests each engine sequentially with a fresh JVM for each size/repetition;
+on failure it stops increasing sizes for that engine and continues with the
+others. The default sequence is 1,000 through 5,000,000 base rows, with
+10,000-record load commits. This can take hours and exhaust the configured
+budget. Start with a dry run and small sizes:
+
+```bash
+bash scripts/scenarios/memory-capacity.sh --sizes 1000,10000 --dry-run
+bash scripts/scenarios/memory-capacity.sh --engines h2,hsqldb,sqlite,pglite \
+  --sizes 1000,10000 --warmup 1 --duration 2 --memory-budget 2g \
+  --jvm-heap 768m --output research-results/capacity
+```
+
+PowerShell: `./scripts/scenarios/memory-capacity.ps1` accepts the same
+arguments. Repeat the identical command with `--resume` to reuse completed
+runs, and add `--rerun-failed` to retry failures. The manifest checks the
+experiment options, runner and benchmark jar hashes, Git state, Java and
+machine; changed configurations must use a new directory. Reports and raw
+artifacts are written incrementally. `capacity.json`, `.csv`, `.md` and
+`.html` record observed successful/failed boundaries, load time and sampled
+RSS. The configured upper limit reached successfully is only a lower bound,
+not an absolute capacity. Sampled peaks can miss spikes, admission failures
+are not proof of OOM, and RSS deltas are not exact database-only memory.
+The runner does not impose a kernel memory or CPU limit; external scopes are
+described in [limitations](docs/limitations.md).
+
+On an otherwise idle 32 GiB, 12-logical-CPU Linux workstation, keep substantial
+headroom for the OS and other processes, for example use `--memory-budget 6g
+--jvm-heap 2g` and an externally configured CPU/memory scope. The benchmark
+also limits its effective watchdog budget to a fraction of detected host or
+container memory. Do not launch large experiments on a shared machine without
+coordination.
+
 ## Results and safety
 
 The output directory contains `report.json`, `report.csv`, `report.md`,

@@ -141,7 +141,7 @@ public final class BenchmarkCli implements Callable<Integer> {
             try (var sampler = new SupervisorSampler(directory.resolve("supervisor-resources.jsonl"), process, start)) {
                 long nextSample = 0;
                 long nextHeartbeat = 0;
-                var watchdog = new ProgressWatchdog(options.inactivityTimeout, effectiveOperationTimeout);
+                var watchdog = new ProgressWatchdog(options.inactivityTimeout, effectiveOperationTimeout, start);
                 while (process.isAlive()) {
                     Long rss = totalRss(process);
                     if (rss != null) {

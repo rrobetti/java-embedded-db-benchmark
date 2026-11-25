@@ -85,7 +85,8 @@ systemd scope includes it in the kernel-enforced group limit.
 `heartbeat.json` is updated atomically by the child sampler. The optional
 inactivity watchdog distinguishes a missing heartbeat from no observed
 loading or operation progress, using `HEARTBEAT_TIMEOUT` and
-`INACTIVITY_TIMEOUT` respectively. An executing but slow JDBC operation is
+`INACTIVITY_TIMEOUT` respectively. The heartbeat deadline starts when the
+child is launched, including before its first sample. An executing but slow JDBC operation is
 indistinguishable from a stalled one until it completes. Validation and
 other uninstrumented phases use heartbeat liveness and the child deadline,
 not inferred row progress. The operation timeout is extended for sparse

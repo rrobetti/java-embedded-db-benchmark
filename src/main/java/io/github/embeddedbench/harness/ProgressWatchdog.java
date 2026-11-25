@@ -16,13 +16,10 @@ final class ProgressWatchdog {
     private long sequence = -1, lastHeartbeat, lastProgress, records = -1, completed = -1;
     private String phase;
 
-    ProgressWatchdog(double seconds) {
-        this(seconds, seconds);
-    }
-
-    ProgressWatchdog(double seconds, double operationSeconds) {
+    ProgressWatchdog(double seconds, double operationSeconds, long startNanos) {
         timeoutNanos = (long) (seconds * 1_000_000_000L);
         operationTimeoutNanos = (long) (operationSeconds * 1_000_000_000L);
+        lastHeartbeat = startNanos;
     }
 
     String check(Path heartbeat, long now) throws IOException {
@@ -57,8 +54,9 @@ final class ProgressWatchdog {
     }
 
     String timeout(long now) {
-        if (sequence < 0 || timeoutNanos == 0) return null;
+        if (timeoutNanos == 0) return null;
         if (now - lastHeartbeat > timeoutNanos) return "HEARTBEAT_TIMEOUT";
+        if (sequence < 0) return null;
         if (phase.equals("loading") && now - lastProgress > timeoutNanos) return "INACTIVITY_TIMEOUT";
         if (OPERATION_PHASES.contains(phase) && now - lastProgress > operationTimeoutNanos)
             return "INACTIVITY_TIMEOUT";

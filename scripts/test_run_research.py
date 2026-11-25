@@ -66,6 +66,12 @@ class ResearchTest(unittest.TestCase):
         self.assertEqual(research.classification({"status": "FAILED", "error": "UNSUPPORTED"}), "UNSUPPORTED")
         self.assertEqual(research.classification({"status": "FAILED", "error": "CORRECTNESS"}), "INCORRECT")
         self.assertEqual(research.classification({"status": "RUNNING"}), "INCOMPLETE")
+        for error, expected in (("OOM", "MEMORY_EXHAUSTION"), ("NATIVE_ALLOCATION", "MEMORY_EXHAUSTION"),
+                                ("MEMORY_BUDGET", "MEMORY_BUDGET"), ("MEMORY_ADMISSION", "MEMORY_ADMISSION"),
+                                ("CHILD_DEADLINE", "CHILD_DEADLINE"), ("HEARTBEAT_TIMEOUT", "HEARTBEAT_TIMEOUT"),
+                                ("INACTIVITY_TIMEOUT", "INACTIVITY_TIMEOUT"), ("JVM_CRASH", "JVM_CRASH")):
+            with self.subTest(error=error):
+                self.assertEqual(research.classification({"status": "FAILED", "error": error}), expected)
 
     def test_report_masks_failed_comparison_and_preserves_raw_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:

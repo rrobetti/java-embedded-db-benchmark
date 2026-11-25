@@ -374,6 +374,11 @@ def classification(row):
         return "UNSUPPORTED"
     if "CORRECTNESS" in error or "INCORRECT" in error:
         return "INCORRECT"
+    if error in ("OOM", "NATIVE_ALLOCATION"):
+        return "MEMORY_EXHAUSTION"
+    if error in ("MEMORY_BUDGET", "MEMORY_ADMISSION", "CHILD_DEADLINE",
+                 "HEARTBEAT_TIMEOUT", "INACTIVITY_TIMEOUT", "TIMEOUT", "JVM_CRASH", "CHILD_EXIT"):
+        return error
     return "FAILED"
 
 

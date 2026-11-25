@@ -341,7 +341,9 @@ class HarnessTest {
     }
 
     @Test void progressWatchdogDistinguishesActivityFromLostHeartbeat() throws Exception {
-        var watchdog = new ProgressWatchdog(2);
+        var watchdog = new ProgressWatchdog(2, 2, 0);
+        assertNull(watchdog.timeout(2_000_000_000L));
+        assertEquals("HEARTBEAT_TIMEOUT", watchdog.timeout(2_100_000_000L));
         watchdog.observe(Map.of("sequence", 1, "phase", "loading", "recordsLoaded", 0,
                 "completedOperations", 0), 0);
         watchdog.observe(Map.of("sequence", 2, "phase", "loading", "recordsLoaded", 5,
@@ -355,7 +357,7 @@ class HarnessTest {
                 "completedOperations", 0), 8_000_000_000L);
         assertNull(watchdog.timeout(8_000_000_000L));
         assertEquals("HEARTBEAT_TIMEOUT", watchdog.timeout(10_100_000_000L));
-        var paced = new ProgressWatchdog(2, 20);
+        var paced = new ProgressWatchdog(2, 20, 0);
         paced.observe(Map.of("sequence", 1, "phase", "measurement", "completedOperations", 1), 0);
         paced.observe(Map.of("sequence", 2, "phase", "measurement", "completedOperations", 1), 5_000_000_000L);
         assertNull(paced.timeout(5_000_000_000L));

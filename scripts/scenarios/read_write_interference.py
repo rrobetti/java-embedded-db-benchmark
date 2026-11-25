@@ -39,6 +39,7 @@ def parse_args(argv=None):
     parser.add_argument("--memory-budget", default="4g")
     parser.add_argument("--jvm-heap", default="768m")
     parser.add_argument("--child-deadline", type=int, default=1800)
+    parser.add_argument("--inactivity-timeout", type=float, default=0)
     parser.add_argument("--load-commit-interval", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path("research-results/read-write"))
@@ -62,6 +63,7 @@ def parse_args(argv=None):
         parser.error("fixed rate is incompatible with worker groups or exceeds the total rate limit")
     if args.rerun_failed and not args.resume:
         parser.error("--rerun-failed requires --resume")
+    common.validate_inactivity(parser, args)
     return args
 
 
@@ -266,7 +268,8 @@ def execute(args):
                                    "--sample-interval", str(args.sample_interval), "--warmup", str(args.warmup),
                                    "--duration", str(args.duration), "--iterations", "1", "--seed", str(args.seed),
                                    "--memory-budget", args.memory_budget, "--jvm-heap", args.jvm_heap,
-                                   "--child-deadline", str(args.child_deadline), "--output", str(directory)]
+                                   "--child-deadline", str(args.child_deadline),
+                                   "--inactivity-timeout", str(args.inactivity_timeout), "--output", str(directory)]
                         if args.fixed_read_rate > 0:
                             command += (["--fixed-read-rate", str(args.fixed_read_rate)] if percentage > 0
                                         else ["--request-rate", str(args.fixed_read_rate)])

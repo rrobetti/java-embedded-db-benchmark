@@ -121,9 +121,20 @@ public final class BenchmarkCli implements Callable<Integer> {
         Long peakTotalRss = null;
         boolean watchdogAvailable = false;
         long incompleteWatchdogSamples = 0;
+        double effectiveOperationTimeout = options.inactivityTimeout;
+        double arrivalRate = options.fixedReadRate > 0 ? options.fixedReadRate
+                : options.requestRate > 0 ? options.requestRate : options.refreshReadRate;
+        if (effectiveOperationTimeout > 0 && arrivalRate > 0) {
+            double longestPhase = Math.max(Math.max(options.duration, options.warmup),
+                    Math.max(options.refreshBefore, options.refreshAfter));
+            double pacedAllowance = Math.min(2 / arrivalRate, longestPhase) + 2 * options.sampleInterval;
+            effectiveOperationTimeout = Math.max(effectiveOperationTimeout, pacedAllowance);
+        }
         try {
             try (var sampler = new SupervisorSampler(directory.resolve("supervisor-resources.jsonl"), process, start)) {
                 long nextSample = 0;
+                long nextHeartbeat = 0;
+                var watchdog = new ProgressWatchdog(options.inactivityTimeout, effectiveOperationTimeout);
                 while (process.isAlive()) {
                     Long rss = totalRss(process);
                     if (rss != null) {
@@ -135,6 +146,11 @@ public final class BenchmarkCli implements Callable<Integer> {
                     if (now >= nextSample) {
                         sampler.sample();
                         nextSample = now + (long) (options.sampleInterval * 1_000_000_000L);
+                    }
+                    if (options.inactivityTimeout > 0 && now >= nextHeartbeat) {
+                        supervisorError = watchdog.check(directory.resolve("heartbeat.json"), now);
+                        if (supervisorError != null) break;
+                        nextHeartbeat = now + 500_000_000L;
                     }
                     if (now - start > TimeUnit.SECONDS.toNanos(options.childDeadline)) {
                         supervisorError = "CHILD_DEADLINE"; break;
@@ -175,6 +191,8 @@ public final class BenchmarkCli implements Callable<Integer> {
             result.put("childLogTail", tail.length() > 2_000 ? tail.substring(tail.length() - 2_000) : tail);
         }
         if (supervisorError != null || process.isAlive() || process.exitValue() != 0 && "OK".equals(result.get("status"))) {
+            if (result.containsKey("error")) result.put("childError", result.get("error"));
+            if (result.containsKey("errorClass")) result.put("childErrorClass", result.get("errorClass"));
             result.put("status", "FAILED"); result.put("valid", false);
             result.put("errorClass", supervisorError == null ? "CHILD_EXIT" : supervisorError);
             result.put("error", "Supervisor stopped or observed failed child; inspect child logs.");
@@ -185,6 +203,7 @@ public final class BenchmarkCli implements Callable<Integer> {
         result.put("supervisorResourceTimeSeries", "supervisor-resources.jsonl");
         result.put("rssWatchdogAvailable", watchdogAvailable);
         result.put("rssWatchdogIncompleteSamples", incompleteWatchdogSamples);
+        result.put("effectiveOperationInactivityTimeoutSeconds", effectiveOperationTimeout);
         result.put("effectiveMemoryBudgetBytes", budget);
         result.put("admissionEstimateBytes", totalEstimate);
         result.put("childCommand", command);
@@ -281,6 +300,7 @@ public final class BenchmarkCli implements Callable<Integer> {
         add(command, "--connections", options.connections); add(command, "--batch", options.batch);
         add(command, "--load-commit-interval", options.loadCommitInterval);
         add(command, "--sample-interval", options.sampleInterval);
+        add(command, "--inactivity-timeout", options.inactivityTimeout);
         add(command, "--reclamation-cycles", options.reclamationCycles);
         add(command, "--idle-seconds", options.idleSeconds);
         add(command, "--refresh-strategy", options.refreshStrategy); add(command, "--refresh-percent", options.refreshPercent);

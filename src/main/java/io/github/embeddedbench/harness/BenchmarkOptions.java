@@ -65,6 +65,8 @@ public final class BenchmarkOptions {
     @Option(names = "--load-mode", description = "batch (dataset loader); workload ingestion measures subsequent inserts")
     String loadMode = "batch";
     @Option(names = "--child-deadline", description = "Maximum seconds per child, including loading") Long childDeadline;
+    @Option(names = "--inactivity-timeout", description = "Seconds without measurable progress or heartbeat; 0 disables")
+    double inactivityTimeout;
     @Option(names = "--child", hidden = true) boolean child;
     @Option(names = "--run-id", hidden = true) String runId;
 
@@ -111,6 +113,8 @@ public final class BenchmarkOptions {
                 || refreshReadRate < 0 || refreshReadRate > 1_000_000 || !Double.isFinite(refreshReadRate)
                 || maintenanceInterval < 0.1 || maintenanceInterval > 28800 || !Double.isFinite(maintenanceInterval)
                 || !Double.isFinite(sampleInterval) || duration <= 0 || warmup < 0 || !Double.isFinite(duration)
+                || !Double.isFinite(inactivityTimeout) || inactivityTimeout < 0 || inactivityTimeout > 86400
+                || inactivityTimeout > 0 && inactivityTimeout < Math.max(2, 2 * sampleInterval)
                 || !Double.isFinite(warmup) || maxOperations < 0 || repetitions < 1 || requestRate < 0
                 || !Double.isFinite(requestRate) || requestRate > 1_000_000 || fixedReadRate < 0
                 || !Double.isFinite(fixedReadRate) || queueCapacity < 1
@@ -185,6 +189,7 @@ public final class BenchmarkOptions {
         m.put("jvmHeapBytes", memoryBytes(jvmHeap)); m.put("loadMode", loadMode);
         m.put("rangeRows", rangeRows); m.put("readPercent", readPercent);
         m.put("analyticalPercent", analyticalPercent); m.put("childDeadlineSeconds", childDeadline);
+        m.put("inactivityTimeoutSeconds", inactivityTimeout);
         return m;
     }
 }

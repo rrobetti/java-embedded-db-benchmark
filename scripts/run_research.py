@@ -67,6 +67,8 @@ def parse_args(argv=None):
     parser.add_argument("--memory-budget", default="4g")
     parser.add_argument("--jvm-heap", default="768m")
     parser.add_argument("--cpu-cores", type=int, help="Enforce an integer CPU affinity limit on Linux")
+    parser.add_argument("--inactivity-timeout", type=float, default=0,
+                        help="Seconds without measurable progress or heartbeat; 0 disables")
     parser.add_argument("--systemd-memory-max", help="Enforce a Linux user-scope memory limit, e.g. 6g")
     parser.add_argument("--systemd-cpu-quota", type=float, help="Enforce a Linux user-scope CPU quota as a percentage")
     parser.add_argument("--inside-systemd-scope", action="store_true", help=argparse.SUPPRESS)
@@ -206,7 +208,8 @@ def plan(args):
     endurance_duration = args.endurance_duration if args.endurance_duration is not None else (2 if quick else 3600)
     output = args.output.resolve()
     common_args = ["--engines", ",".join(args.engines), "--repetitions", str(repetitions),
-                   "--memory-budget", args.memory_budget, "--jvm-heap", args.jvm_heap]
+                   "--memory-budget", args.memory_budget, "--jvm-heap", args.jvm_heap,
+                   "--inactivity-timeout", str(args.inactivity_timeout)]
     time_args = ["--warmup", str(warmup), "--duration", str(duration)]
     result = []
     for name in args.scenarios:

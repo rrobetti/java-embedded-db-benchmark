@@ -327,6 +327,27 @@ class HarnessTest {
         assertTrue(sample.containsKey("childCpuCoreEquivalent"));
     }
 
+    @Test void progressWatchdogDistinguishesActivityFromLostHeartbeat() throws Exception {
+        var watchdog = new ProgressWatchdog(2);
+        watchdog.observe(Map.of("sequence", 1, "phase", "loading", "recordsLoaded", 0,
+                "completedOperations", 0), 0);
+        watchdog.observe(Map.of("sequence", 2, "phase", "loading", "recordsLoaded", 5,
+                "completedOperations", 0), 1_000_000_000L);
+        watchdog.observe(Map.of("sequence", 3, "phase", "loading", "recordsLoaded", 5,
+                "completedOperations", 0), 3_100_000_000L);
+        assertEquals("INACTIVITY_TIMEOUT", watchdog.timeout(3_100_000_000L));
+        watchdog.observe(Map.of("sequence", 4, "phase", "validation", "recordsLoaded", 5,
+                "completedOperations", 0), 3_200_000_000L);
+        watchdog.observe(Map.of("sequence", 5, "phase", "validation", "recordsLoaded", 5,
+                "completedOperations", 0), 8_000_000_000L);
+        assertNull(watchdog.timeout(8_000_000_000L));
+        assertEquals("HEARTBEAT_TIMEOUT", watchdog.timeout(10_100_000_000L));
+        var paced = new ProgressWatchdog(2, 20);
+        paced.observe(Map.of("sequence", 1, "phase", "measurement", "completedOperations", 1), 0);
+        paced.observe(Map.of("sequence", 2, "phase", "measurement", "completedOperations", 1), 5_000_000_000L);
+        assertNull(paced.timeout(5_000_000_000L));
+    }
+
     @Test void samplerReportsIntervalOperationsAndIndependentLatencyHistograms() throws Exception {
         Path file = directory().resolve("performance.jsonl");
         var measurements = new Measurements();
@@ -347,6 +368,8 @@ class HarnessTest {
         assertEquals(1L, intervals.get(1).get("successes"));
         assertEquals(1L, intervals.get(1).get("failures"));
         assertEquals(1L, intervals.get(1).get("rejected"));
+        assertEquals(1L, intervals.get(1).get("timeouts"));
+        assertEquals(0L, ((Number) intervals.get(1).get("retries")).longValue());
         var first = (Map<?, ?>) intervals.get(0).get("categories");
         var second = (Map<?, ?>) intervals.get(1).get("categories");
         assertEquals(1L, ((Map<?, ?>) first.get("read")).get("count"));
@@ -379,9 +402,16 @@ class HarnessTest {
             assertTrue(sample.containsKey("rssBytes"));
             assertTrue(sample.containsKey("wasmMemoryBytes"));
             assertNull(sample.get("wasmMemoryBytes"));
+            assertNull(sample.get("nativeMemoryBytes"));
+            assertNull(sample.get("gcPauseNanos"));
+            assertTrue(sample.containsKey("processCpuCoreEquivalent"));
         }
         assertTrue(phases.containsAll(List.of("initialization", "loading", "validation",
                 "warmup", "measurement", "deletion", "shutdown")));
+        Map<?, ?> heartbeat = (Map<?, ?>) Json.decode(Files.readString(options.output.resolve("heartbeat.json")));
+        assertTrue(((Number) heartbeat.get("sequence")).longValue() > 0);
+        assertEquals(70L, heartbeat.get("recordsLoaded"));
+        assertTrue(((Number) heartbeat.get("completedOperations")).longValue() > 0);
         assertTrue(samples.stream().map(Json::decode).map(sample -> (Map<?, ?>) sample)
                 .anyMatch(sample -> "validation".equals(sample.get("phase"))
                         && Long.valueOf(70).equals(sample.get("recordsLoaded"))));

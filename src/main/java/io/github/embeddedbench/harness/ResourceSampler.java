@@ -18,6 +18,7 @@ import org.HdrHistogram.Histogram;
 /** Samples process and JVM counters without traversing database files. */
 final class ResourceSampler implements AutoCloseable {
     private final BufferedWriter writer;
+    private final Path heartbeat;
     private final Thread thread;
     private final long intervalMillis;
     private volatile String phase = "initialization";
@@ -27,9 +28,14 @@ final class ResourceSampler implements AutoCloseable {
     private List<Measurements> performanceSources = List.of();
     private List<Measurements.Sample> previous = List.of();
     private long previousNanos;
+    private long previousResourceNanos;
+    private Long previousProcessCpuNanos;
+    private long heartbeatSequence;
+    private long completedOperations;
 
     ResourceSampler(Path path, double intervalSeconds) throws IOException {
         writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8);
+        heartbeat = path.resolveSibling("heartbeat.json");
         intervalMillis = Math.max(1, (long) (intervalSeconds * 1000));
         sample();
         thread = new Thread(this::run, "resource-sampler");
@@ -93,6 +99,7 @@ final class ResourceSampler implements AutoCloseable {
         m.put("directBufferBytes", ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class).stream()
                 .filter(pool -> pool.getName().equals("direct")).map(BufferPoolMXBean::getMemoryUsed)
                 .filter(value -> value >= 0).findFirst().orElse(null));
+        m.put("nativeMemoryBytes", null);
         m.put("wasmMemoryBytes", null);
         m.put("threadCount", ManagementFactory.getThreadMXBean().getThreadCount());
         long count = 0, millis = 0;
@@ -103,9 +110,20 @@ final class ResourceSampler implements AutoCloseable {
         }
         m.put("gcCollections", countKnown ? count : null);
         m.put("gcMillis", timeKnown ? millis : null);
+        m.put("gcPauseNanos", null);
         var bean = ManagementFactory.getOperatingSystemMXBean();
         if (bean instanceof com.sun.management.OperatingSystemMXBean os) {
-            m.put("processCpuNanos", nonnegative(os.getProcessCpuTime()));
+            Long cpu = nonnegative(os.getProcessCpuTime());
+            long now = System.nanoTime();
+            Double cores = cpu != null && previousProcessCpuNanos != null && cpu >= previousProcessCpuNanos
+                    && now > previousResourceNanos
+                    ? (cpu - previousProcessCpuNanos) / (double) (now - previousResourceNanos) : null;
+            m.put("processCpuNanos", cpu);
+            m.put("processCpuCoreEquivalent", cores);
+            m.put("processCpuPercentOfJvmAvailableProcessors", cores == null ? null
+                    : cores * 100 / Runtime.getRuntime().availableProcessors());
+            previousProcessCpuNanos = cpu;
+            previousResourceNanos = now;
             m.put("processCpuLoad", nonnegative(os.getProcessCpuLoad()));
             m.put("systemCpuLoad", nonnegative(os.getCpuLoad()));
             m.put("availableMemoryBytes", nonnegative(os.getFreeMemorySize()));
@@ -113,13 +131,24 @@ final class ResourceSampler implements AutoCloseable {
             m.put("usedSwapBytes", totalSwap >= 0 && freeSwap >= 0 && freeSwap <= totalSwap
                     ? totalSwap - freeSwap : null);
         } else {
-            for (String key : new String[]{"processCpuNanos", "processCpuLoad", "systemCpuLoad",
+            for (String key : new String[]{"processCpuNanos", "processCpuCoreEquivalent",
+                    "processCpuPercentOfJvmAvailableProcessors", "processCpuLoad", "systemCpuLoad",
                     "availableMemoryBytes", "usedSwapBytes"}) m.put(key, null);
         }
-        m.put("performance", performance());
+        Map<String, Object> performance = performance();
+        m.put("performance", performance);
+        if (performance != null)
+            for (String key : List.of("successes", "failures", "rejected"))
+                completedOperations += ((Number) performance.get(key)).longValue();
         writer.write(Json.encode(m));
         writer.newLine();
         writer.flush();
+        var progress = new LinkedHashMap<String, Object>();
+        progress.put("sequence", ++heartbeatSequence);
+        progress.put("phase", phase);
+        progress.put("recordsLoaded", recordsLoaded < 0 ? null : recordsLoaded);
+        progress.put("completedOperations", completedOperations);
+        BenchmarkCli.writeJson(heartbeat, progress);
     }
 
     private Map<String, Object> performance() {
@@ -158,6 +187,8 @@ final class ResourceSampler implements AutoCloseable {
         result.put("failures", failures);
         result.put("rejected", rejected);
         result.put("errors", errors);
+        result.put("timeouts", errors.getOrDefault("TIMEOUT", 0L));
+        result.put("retries", 0);
         result.put("throughputOpsPerSecond", seconds > 0 ? successes / seconds : null);
         var categories = new LinkedHashMap<String, Object>();
         histograms.forEach((key, histogram) -> {

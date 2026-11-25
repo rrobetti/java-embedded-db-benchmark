@@ -173,6 +173,15 @@ binary suffixes. `--iterations` means independent fresh-JVM repetitions and must
 duration-only, while positive values bound attempts per phase.
 `--child-deadline` limits each individual child in seconds, including loading
 and validation, not the whole suite.
+`--inactivity-timeout` optionally stops a child after the specified seconds
+without a sampler heartbeat or observable loading/operation progress; zero
+(the default) disables it. It applies to the Java CLI and research runners.
+The value must be at least twice the sampling interval and two seconds.
+Slow queries may legitimately have no completions; choose a conservative
+timeout. Validation and other phases without progress counters are protected
+by the child deadline and heartbeat, not a progress-based timeout. Paced
+workloads get a longer effective operation timeout to account for their
+scheduled arrival intervals; the effective value is reported.
 large PGlite loads can be slow, so use fewer rows and iterations for diagnosis.
 `--threads 1,4,8` runs a concurrency grid; omit `--connections` to match each
 worker count, or set a connection count no larger than the smallest grid value.

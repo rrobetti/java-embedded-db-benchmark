@@ -56,12 +56,18 @@ dedicated CPU quotas. Direct buffers are not all native allocations; WASM
 memory is explicitly unavailable rather than inferred from RSS. Short spikes
 can be missed. Warmup and measurement samples include interval counts,
 throughput and success-latency percentiles by operation category, as well as
-failed and rejected counts. These are completion-window statistics: pending
+failed, timeout and rejected counts. Retries are zero because the harness
+does not retry operations. These are completion-window statistics: pending
 open-loop requests are not counted until completion or rejection. Interval
 histograms are snapshots of worker-local cumulative histograms and are not
 mixed across phases. `recordsLoaded` counts successfully executed insert
 statements/batches in the current base load, including uncommitted records;
 it is not a committed-row count. It resets after a warmup reload.
+Per-interval CPU core-equivalent comes from process CPU-time deltas;
+the accompanying percentage uses the JVM's reported available processor
+count, which is not necessarily the effective cgroup quota. Aggregate native
+memory and individual GC pauses are explicitly unavailable (`null`); the
+GC collection-time counter is not an individual-pause histogram.
 
 Each child run also has `supervisor-resources.jsonl`, sampled at the same
 configured interval by the supervisor. It separates supervisor and child RSS,
@@ -72,6 +78,18 @@ descendants and transient memory spikes can be missed. Summed RSS can
 double-count shared pages. CPU time for exited descendants is not retained
 in the live-tree sum. Sampling provides neither complete native-memory
 attribution nor a kernel resource limit.
+The Python scenario orchestrator is the Java supervisor's parent and is not
+included in this Java process-tree series or its RSS watchdog; an optional
+systemd scope includes it in the kernel-enforced group limit.
+
+`heartbeat.json` is updated atomically by the child sampler. The optional
+inactivity watchdog distinguishes a missing heartbeat from no observed
+loading or operation progress, using `HEARTBEAT_TIMEOUT` and
+`INACTIVITY_TIMEOUT` respectively. An executing but slow JDBC operation is
+indistinguishable from a stalled one until it completes. Validation and
+other uninstrumented phases use heartbeat liveness and the child deadline,
+not inferred row progress. The operation timeout is extended for sparse
+configured arrivals and is recorded in the result.
 Deletion is not compaction or proof that allocated pages were returned to
 the OS. CPU/GC/I/O deltas refer to measurement, not startup/load. Normalized
 throughput divides by reported logical processors or deterministic logical

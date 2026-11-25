@@ -6,6 +6,7 @@ import csv
 import hashlib
 import html
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -49,6 +50,7 @@ def parse_args(argv=None):
     parser.add_argument("--memory-budget", default="4g")
     parser.add_argument("--jvm-heap", default="768m")
     parser.add_argument("--child-deadline", type=int, default=1800)
+    parser.add_argument("--inactivity-timeout", type=float, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path("research-results/memory-capacity"))
     parser.add_argument("--resume", action="store_true")
@@ -68,7 +70,15 @@ def parse_args(argv=None):
         parser.error("invalid warmup, duration or sample interval")
     if args.rerun_failed and not args.resume:
         parser.error("--rerun-failed requires --resume")
+    validate_inactivity(parser, args)
     return args
+
+
+def validate_inactivity(parser, args):
+    value = args.inactivity_timeout
+    if not math.isfinite(value) or value < 0 or value > 86400 \
+            or 0 < value < max(2, 2 * args.sample_interval):
+        parser.error("inactivity timeout must be 0 or at least twice the sample interval and 2 seconds")
 
 
 def command_output(command, cwd=ROOT):
@@ -85,7 +95,8 @@ def experiment_identity(args, jar, java):
         "repetitions": args.repetitions, "warmup": args.warmup, "duration": args.duration,
         "payload": args.payload, "batchSize": args.batch_size, "loadCommitInterval": args.load_commit_interval,
         "sampleInterval": args.sample_interval, "memoryBudget": args.memory_budget,
-        "jvmHeap": args.jvm_heap, "childDeadline": args.child_deadline, "seed": args.seed,
+        "jvmHeap": args.jvm_heap, "childDeadline": args.child_deadline,
+        "inactivityTimeout": args.inactivity_timeout, "seed": args.seed,
         "jarSha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
         "runnerSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "gitCommit": git("rev-parse", "HEAD"), "gitDirty": git("status", "--porcelain", "--untracked-files=no"),
@@ -321,7 +332,8 @@ def execute(args):
                            "--sample-interval", str(args.sample_interval), "--warmup", str(args.warmup),
                            "--duration", str(args.duration), "--iterations", "1", "--seed", str(args.seed),
                            "--memory-budget", args.memory_budget, "--jvm-heap", args.jvm_heap,
-                           "--child-deadline", str(args.child_deadline), "--output", str(directory)]
+                           "--child-deadline", str(args.child_deadline),
+                           "--inactivity-timeout", str(args.inactivity_timeout), "--output", str(directory)]
                 started = time.monotonic()
                 try:
                     exit_code = run_supervisor(command, directory)

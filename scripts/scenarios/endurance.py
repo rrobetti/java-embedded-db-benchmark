@@ -34,6 +34,7 @@ def parse_args(argv=None):
     parser.add_argument("--memory-budget", default="4g")
     parser.add_argument("--jvm-heap", default="768m")
     parser.add_argument("--child-deadline", type=int)
+    parser.add_argument("--inactivity-timeout", type=float, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path("research-results/endurance"))
     parser.add_argument("--resume", action="store_true")
@@ -55,6 +56,7 @@ def parse_args(argv=None):
         parser.error("child deadline must allow warmup and measurement")
     if args.rerun_failed and not args.resume:
         parser.error("--rerun-failed requires --resume")
+    common.validate_inactivity(parser, args)
     return args
 
 
@@ -230,7 +232,8 @@ def execute(args):
                        "--sample-interval", str(args.sample_interval), "--warmup", str(args.warmup),
                        "--duration", str(args.duration), "--iterations", "1", "--seed", str(args.seed),
                        "--memory-budget", args.memory_budget, "--jvm-heap", args.jvm_heap,
-                       "--child-deadline", str(args.child_deadline), "--output", str(directory)]
+                       "--child-deadline", str(args.child_deadline),
+                       "--inactivity-timeout", str(args.inactivity_timeout), "--output", str(directory)]
             start = time.monotonic()
             try:
                 entry["exitCode"] = common.run_supervisor(command, directory)

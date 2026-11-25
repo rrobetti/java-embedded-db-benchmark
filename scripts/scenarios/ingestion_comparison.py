@@ -29,6 +29,7 @@ def parse_args(argv=None):
     parser.add_argument("--memory-budget", default="4g")
     parser.add_argument("--jvm-heap", default="768m")
     parser.add_argument("--child-deadline", type=int, default=1800)
+    parser.add_argument("--inactivity-timeout", type=float, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path("research-results/ingestion-comparison"))
     parser.add_argument("--resume", action="store_true")
@@ -49,6 +50,7 @@ def capacity_args(args, interval, directory):
         "--batch-size", str(args.batch_size), "--load-commit-interval", str(interval),
         "--sample-interval", str(args.sample_interval), "--memory-budget", args.memory_budget,
         "--jvm-heap", args.jvm_heap, "--child-deadline", str(args.child_deadline),
+        "--inactivity-timeout", str(args.inactivity_timeout),
         "--seed", str(args.seed), "--output", str(directory),
     ]
     if args.dry_run:

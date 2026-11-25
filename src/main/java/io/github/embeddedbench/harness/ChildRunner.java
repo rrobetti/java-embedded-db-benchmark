@@ -47,6 +47,8 @@ final class ChildRunner {
                 "firstWorkerConnection", "First harness-owned worker connection; anchor/version connections opened earlier",
                 "firstConnection", "Alias of firstWorkerConnection; not the first chronological JDBC connection"));
         stages.put("baseline", Resources.snapshot(databaseDirectory));
+        ResourceSampler sampler = new ResourceSampler(directory.resolve("resources.jsonl"), options.sampleInterval);
+        result.put("resourceTimeSeries", "resources.jsonl");
         DatabaseAdapter adapter = null;
         Workload workload = null;
         var connections = new ArrayList<Connection>();
@@ -122,6 +124,7 @@ final class ChildRunner {
             adapter.createSchema(setup);
             timings.put("schema", System.nanoTime() - time);
             stages.put("schema", Resources.snapshot(databaseDirectory));
+            sampler.phase("loading");
             time = System.nanoTime();
             DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode,
                     options.loadCommitInterval);
@@ -129,6 +132,7 @@ final class ChildRunner {
             result.put("loadNanos", loadNanos);
             result.put("loadLogicalBytesPerSecond", loadNanos > 0
                     ? DeterministicDataset.logicalBytes(options.rows, options.payload) * 1_000_000_000.0 / loadNanos : null);
+            sampler.phase("validation");
             time = System.nanoTime();
             DeterministicDataset.validate(setup, options.rows, options.payload, options.seed);
             result.put("datasetValidationNanos", System.nanoTime() - time);
@@ -139,9 +143,11 @@ final class ChildRunner {
             workload.prepare(setup);
             int actualConnections = serialized ? 1 : options.connections;
             for (int i = 1; i < actualConnections; i++) connections.add(adapter.openConnection());
+            sampler.phase("warmup");
             executePhase(workload, connections, workers, serialized, options, options.warmup,
                     options.seed ^ 0x123456789abcdefL, "warmup", "warmup-latency", result);
             if (options.warmup > 0) {
+                sampler.phase("validation");
                 workload.validate(setup);
                 result.put("warmupValid", true);
                 if (!java.util.Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte", "rollback")
@@ -150,6 +156,7 @@ final class ChildRunner {
                     workload.close();
                     workload = null;
                     deleteDataset(setup);
+                    sampler.phase("loading");
                     DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode,
                             options.loadCommitInterval);
                     DeterministicDataset.validate(setup, options.rows, options.payload, options.seed);
@@ -162,6 +169,7 @@ final class ChildRunner {
             }
             Map<String, Object> measuredBaseline = Resources.snapshot(databaseDirectory);
             stages.put("measurementBaseline", measuredBaseline);
+            sampler.phase("measurement");
             var steady = executePhase(workload, connections, workers, serialized, options, options.duration, options.seed,
                     "measurement", "latency", result);
             Map<String, Object> steadyResources = Resources.snapshot(databaseDirectory);
@@ -177,6 +185,7 @@ final class ChildRunner {
             normalized.put("peakRssPerLogicalDatasetByte", steadyResources.get("peakRssBytes") instanceof Number rss
                     && logicalBytes > 0 ? rss.doubleValue() / logicalBytes : null);
             result.put("normalized", normalized);
+            sampler.phase("validation");
             time = System.nanoTime();
             workload.validate(setup);
             result.put("workloadValidationNanos", System.nanoTime() - time);
@@ -188,6 +197,7 @@ final class ChildRunner {
             long warmupErrors = ((Number) ((Map<?, ?>) result.get("warmup")).get("failures")).longValue();
             result.put("status", errors + warmupErrors == 0 ? "OK" : "COMPLETED_WITH_ERRORS");
             time = System.nanoTime();
+            sampler.phase("deletion");
             deleteDataset(setup);
             result.put("deleteNanos", System.nanoTime() - time);
             stages.put("delete", Resources.snapshot(databaseDirectory));
@@ -199,6 +209,7 @@ final class ChildRunner {
             result.put("status", Measurements.classify(error).equals("UNSUPPORTED") ? "UNSUPPORTED" : "FAILED");
         } finally {
             long time = System.nanoTime();
+            try { sampler.phase("shutdown"); } catch (Throwable error) { failure = append(failure, error, result); }
             if (workload != null) {
                 try { workload.close(); } catch (Throwable error) { failure = append(failure, error, result); }
             }
@@ -210,6 +221,7 @@ final class ChildRunner {
             }
             timings.put("shutdown", System.nanoTime() - time);
             stages.put("shutdown", Resources.snapshot(databaseDirectory));
+            try { sampler.close(); } catch (Throwable error) { failure = append(failure, error, result); }
             if (failure != null) result.put("valid", false);
             BenchmarkCli.writeJson(directory.resolve("result.json"), result);
         }

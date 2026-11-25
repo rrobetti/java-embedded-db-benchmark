@@ -259,6 +259,18 @@ class HarnessTest {
         assertEquals("OOM", BenchmarkCli.childExitKind(directory));
     }
 
+    @Test void samplerWritesPeriodicSamplesDuringAPhase() throws Exception {
+        Path file = directory().resolve("samples.jsonl");
+        try (var sampler = new ResourceSampler(file, 0.1)) {
+            sampler.phase("loading");
+            Thread.sleep(350);
+        }
+        long loading = Files.readAllLines(file).stream()
+                .map(Json::decode).map(value -> (Map<?, ?>) value)
+                .filter(value -> "loading".equals(value.get("phase"))).count();
+        assertTrue(loading >= 3, "phase boundaries and periodic samples must be recorded");
+    }
+
     @Test void realH2ChildValidatesAndDeletesDataset() throws Exception {
         BenchmarkOptions options = options();
         options.output = directory(); options.rows = 10L; options.payload = 16; options.duration = 1.0;
@@ -273,6 +285,17 @@ class HarnessTest {
         assertNotNull(((Map<?, ?>) result.get("stages")).get("delete"));
         assertNotNull(result.get("resourceDeltas"));
         assertTrue(Files.isRegularFile(options.output.resolve("latency-read.hgr")));
+        List<String> samples = Files.readAllLines(options.output.resolve("resources.jsonl"));
+        var phases = new java.util.HashSet<>();
+        for (String line : samples) {
+            Map<?, ?> sample = (Map<?, ?>) Json.decode(line);
+            phases.add(sample.get("phase"));
+            assertTrue(sample.containsKey("rssBytes"));
+            assertTrue(sample.containsKey("wasmMemoryBytes"));
+            assertNull(sample.get("wasmMemoryBytes"));
+        }
+        assertTrue(phases.containsAll(List.of("initialization", "loading", "validation",
+                "warmup", "measurement", "deletion", "shutdown")));
     }
 
     @Test void reportingEscapesHtmlAndCsv() {

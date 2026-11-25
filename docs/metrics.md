@@ -47,6 +47,15 @@ monitoring is not a successful hard cap.
 
 Resource snapshots are taken at baseline, initialization, schema, load,
 steady-state, explicit row deletion after validation, and shutdown.
+Additionally, each child writes `resources.jsonl` with phase-labelled JVM
+heap/non-heap, RSS/peak RSS, direct-buffer, CPU, GC, thread, free-memory and
+swap counters. Sampling defaults to one second and can be changed with
+`--sample-interval` (0.1 to 3600 seconds). Samples are also taken at phase
+boundaries. CPU load fractions are JVM/OS-provided recent estimates, not
+dedicated CPU quotas. Direct buffers are not all native allocations; WASM
+memory is explicitly unavailable rather than inferred from RSS. Short spikes
+can be missed. Monitoring does not provide per-interval operation or latency
+data, supervisor process time series, or complete native-memory attribution.
 Deletion is not compaction or proof that allocated pages were returned to
 the OS. CPU/GC/I/O deltas refer to measurement, not startup/load. Normalized
 throughput divides by reported logical processors or deterministic logical

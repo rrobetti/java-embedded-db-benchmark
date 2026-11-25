@@ -423,6 +423,28 @@ class HarnessTest {
         assertTrue(HistogramAggregation.merge(options.output, List.of(result)).isEmpty());
     }
 
+    @Test void cacheRefreshStrategiesValidateWithConcurrentReaders() throws Exception {
+        for (String strategy : List.of("record-update", "record-invalidate", "bulk-invalidate", "incremental-refresh",
+                "full-table-refresh", "replacement", "expiration")) {
+            BenchmarkOptions options = options();
+            options.output = directory(); options.rows = 20L; options.payload = 16;
+            options.engines = List.of("h2"); options.scenarios = List.of("cache-refresh-concurrent");
+            options.threadSpec = "2"; options.refreshStrategy = strategy; options.refreshPercent = 50;
+            options.refreshBefore = 0.1; options.refreshAfter = 0.1; options.runId = strategy; options.resolve();
+            Map<String, Object> result = ChildRunner.run(options);
+            assertEquals("OK", result.get("status"), strategy + ": " + result.get("error"));
+            assertEquals(true, result.get("valid"));
+            Map<?, ?> refresh = (Map<?, ?>) result.get("cacheRefresh");
+            assertEquals(true, refresh.get("cacheValid"));
+            assertEquals(10L, refresh.get("affectedEntries"));
+            Map<?, ?> reads = (Map<?, ?>) refresh.get("reads");
+            assertTrue(((Number) ((Map<?, ?>) reads.get("before")).get("successes")).longValue() > 0);
+            assertTrue(((Number) ((Map<?, ?>) reads.get("after")).get("successes")).longValue() > 0);
+            assertNull(refresh.get("blockingDurationNanos"));
+            assertTrue(HistogramAggregation.merge(options.output, List.of(result)).isEmpty());
+        }
+    }
+
     @Test void compatibleHistogramsAreMergedNotPercentilesAveraged() throws Exception {
         Path directory = directory();
         var results = new ArrayList<Map<String, Object>>();

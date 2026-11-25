@@ -88,6 +88,19 @@ cutoff. Cache readers point-lookup customers, so concurrent maintenance
 observes cross-table locking/resource impact rather than same-key TTL races.
 Publish this distinction with cache-oriented results.
 
+The separate harness scenario `cache-refresh-concurrent` instead seeds an
+additional `cache_entries` table and runs actual readers of that table while
+a writer operates. `record-update` and `record-invalidate` commit one entry at
+a time; `bulk-invalidate` and `expiration` delete the selected range in one
+transaction, with expiration using a deterministic synthetic expiry column.
+`incremental-refresh` commits configured-size chunks. `full-table-refresh`
+updates the selected range in one transaction; `replacement` deletes and
+reinserts that range atomically. Only the 100% setting covers the whole
+table. Every returned entry must be a permitted old or new value; deletion
+may expose absence, but replacement must not. The final cache and the
+original seeded dataset are validated. These are single-row observations,
+not proof of a multi-row snapshot.
+
 `upsert` chooses existing-row updates or unique new-row inserts with equal
 probability. It uses portable JDBC UPDATE followed by conditional INSERT
 in one transaction, not a vendor-specific conflict clause or silent retry.

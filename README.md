@@ -194,6 +194,37 @@ Include a 100% read baseline to calculate p95 degradation. Default settings
 schedule 256 children across all engines, patterns, worker counts and mixes;
 use `--dry-run` before executing.
 
+### Cache refresh with concurrent readers
+
+The cache runner adds a separate table of one cache entry per base row, so
+these experiments contain **eight**, not seven, records per base row.
+Readers query that table continuously while a writer performs individual
+updates/invalidation, bulk invalidation, incremental updates, transactional
+range updates, atomic replacement or simulated expiration. At 100%, the
+transactional range update and replacement cover the full cache.
+
+```bash
+bash scripts/scenarios/cache-refresh.sh --engines h2,sqlite \
+  --strategies incremental-refresh,replacement --percentages 10,100 \
+  --rows 1000 --workers 2 --before 1 --after 1 --read-rate 50 \
+  --output research-results/refresh
+```
+
+PowerShell: `./scripts/scenarios/cache-refresh.ps1` accepts the same
+arguments. Defaults schedule 112 fresh-JVM runs across four engines, seven
+strategies and four percentages, with ten seconds of reads before and after
+each refresh. `--read-rate 0` is unpaced closed-loop; a positive value paces
+closed-loop readers and is not an open-loop arrival guarantee. PGlite
+serializes the writer and readers on one session. SQLite may report
+`SQLITE_LOCKED`; these errors are not retried. Readers validate each
+single-row result against the permitted old/new or invalidated state, while
+the final cache is fully validated. Replacement uses one transaction and
+must never expose a missing selected row. This does not establish a
+multi-row snapshot guarantee. A short refresh can have no overlapping reads;
+its during-refresh latency and ratios are then unavailable, not zero. Exact
+lock-blocking duration is not measured. `--dry-run`, `--resume` and
+`--rerun-failed` are supported.
+
 ### Open-loop load scalability
 
 `scripts/scenarios/load-scalability.sh` (or `.ps1`) offers point reads at

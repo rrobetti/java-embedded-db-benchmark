@@ -33,6 +33,16 @@ public final class BenchmarkOptions {
     int reclamationCycles = 1;
     @Option(names = "--idle-seconds", description = "Idle time after each reclamation deletion")
     double idleSeconds = 30;
+    @Option(names = "--refresh-strategy", description = "Cache refresh strategy")
+    String refreshStrategy = "incremental-refresh";
+    @Option(names = "--refresh-percent", description = "Percentage of cache entries affected")
+    int refreshPercent = 10;
+    @Option(names = "--refresh-before", description = "Seconds of reads before refresh")
+    double refreshBefore = 10;
+    @Option(names = "--refresh-after", description = "Seconds of reads after refresh")
+    double refreshAfter = 10;
+    @Option(names = "--refresh-read-rate", description = "Paced closed-loop reads/sec across refresh readers; 0 is unpaced")
+    double refreshReadRate;
     @Option(names = {"--transaction-size", "--transaction"}) Integer transactionSize;
     @Option(names = {"--request-rate", "--rate"}, description = "Requests/sec; zero selects closed-loop") double requestRate;
     @Option(names = "--fixed-read-rate", description = "Open-loop read arrivals/sec for rw-* workloads") double fixedReadRate;
@@ -94,6 +104,9 @@ public final class BenchmarkOptions {
                 || transactionSize < 1 || loadCommitInterval < 0 || sampleInterval < 0.1 || sampleInterval > 3600
                 || reclamationCycles < 1 || reclamationCycles > 1000 || idleSeconds < 0 || idleSeconds > 14400
                 || !Double.isFinite(idleSeconds)
+                || refreshPercent < 1 || refreshPercent > 100 || refreshBefore < 0 || refreshBefore > 14400
+                || refreshAfter < 0 || refreshAfter > 14400 || !Double.isFinite(refreshBefore) || !Double.isFinite(refreshAfter)
+                || refreshReadRate < 0 || refreshReadRate > 1_000_000 || !Double.isFinite(refreshReadRate)
                 || !Double.isFinite(sampleInterval) || duration <= 0 || warmup < 0 || !Double.isFinite(duration)
                 || !Double.isFinite(warmup) || maxOperations < 0 || repetitions < 1 || requestRate < 0
                 || !Double.isFinite(requestRate) || requestRate > 1_000_000 || fixedReadRate < 0
@@ -107,6 +120,9 @@ public final class BenchmarkOptions {
             throw new IllegalArgumentException("Dedicated mode requires connections equal to threads; use auto/pooled");
         if (!List.of("batch", "prepared", "individual").contains(loadMode))
             throw new IllegalArgumentException("load-mode must be batch, prepared or individual");
+        if (!List.of("record-update", "record-invalidate", "bulk-invalidate", "incremental-refresh",
+                "full-table-refresh", "replacement", "expiration").contains(refreshStrategy))
+            throw new IllegalArgumentException("Unknown refresh strategy: " + refreshStrategy);
         if (engines.isEmpty() || scenarios.isEmpty()) throw new IllegalArgumentException("Select engines and scenarios");
         if (fixedReadRate > 0 && (requestRate > 0 || readPercent == 0
                 || fixedReadRate * 100.0 / readPercent > 1_000_000))
@@ -153,6 +169,9 @@ public final class BenchmarkOptions {
         m.put("connections", connections); m.put("batchSize", batch); m.put("loadCommitInterval", loadCommitInterval);
         m.put("sampleIntervalSeconds", sampleInterval);
         m.put("reclamationCycles", reclamationCycles); m.put("idleSeconds", idleSeconds);
+        m.put("refreshStrategy", refreshStrategy); m.put("refreshPercent", refreshPercent);
+        m.put("refreshBeforeSeconds", refreshBefore); m.put("refreshAfterSeconds", refreshAfter);
+        m.put("refreshReadRate", refreshReadRate);
         m.put("transactionSize", transactionSize);
         m.put("requestRate", requestRate); m.put("fixedReadRate", fixedReadRate);
         m.put("readerWorkers", readerWorkers); m.put("queueCapacity", queueCapacity);

@@ -145,6 +145,18 @@ final class ChildRunner {
                 result.put("status", "OK");
                 return result;
             }
+            if (options.scenarios.getFirst().equals("cache-refresh-concurrent")) {
+                result.put("effectiveConnections", serialized ? 1 : options.threads + 1);
+                result.put("effectiveConnectionMode", serialized ? "serialized-single-session" : "dedicated-readers-and-writer");
+                Map<String, Object> refresh = CacheRefreshRunner.run(adapter, setup, connections, serialized,
+                        options, databaseDirectory, sampler);
+                result.put("cacheRefresh", refresh);
+                DeterministicDataset.validate(setup, options.rows, options.payload, options.seed);
+                result.put("valid", true);
+                result.put("status", ((Number) refresh.get("readFailures")).longValue() == 0
+                        ? "OK" : "COMPLETED_WITH_ERRORS");
+                return result;
+            }
             workload = Workloads.create(options.scenarios.getFirst(), options.rows, options.rangeRows,
                     options.readPercent, options.analyticalPercent, options.transactionSize, options.seed);
             workload.prepare(setup);

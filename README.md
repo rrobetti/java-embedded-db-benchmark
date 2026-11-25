@@ -170,6 +170,28 @@ errors, process CPU and RSS, and the effective session topology. PGlite's
 logical workers serialize through a single physical session; they are not
 independent concurrent database sessions.
 
+### Open-loop load scalability
+
+`scripts/scenarios/load-scalability.sh` (or `.ps1`) offers point reads at
+progressively increasing rates using the bounded open-loop queue. Scheduled
+arrival-to-completion latency includes queueing and scheduler delay. The
+reports distinguish offered, accepted, completed, failed and rejected
+requests; the observed sustainable bound requires every repetition at that
+rate to meet the configured p99 and combined failure/rejection targets.
+It is a tested bound, not an absolute maximum. For example:
+
+```bash
+bash scripts/scenarios/load-scalability.sh --engines h2,sqlite \
+  --rates 10,100,500 --rows 1000 --workers 2 --warmup 1 --duration 5 \
+  --p99-ms 100 --max-error-rate 0.01 --output research-results/load
+```
+
+Default rates are 10, 100, 500, 1,000 and 5,000 requests/s, with 30 seconds
+warmup and 60 seconds measurement. `--queue-capacity` bounds queued arrivals;
+`--dry-run`, `--resume` and `--rerun-failed` are supported. Select rates
+appropriate to the machine rather than interpreting a short CI run as a
+production saturation result.
+
 On an otherwise idle 32 GiB, 12-logical-CPU Linux workstation, keep substantial
 headroom for the OS and other processes, for example use `--memory-budget 6g
 --jvm-heap 2g` and an externally configured CPU/memory scope. The benchmark

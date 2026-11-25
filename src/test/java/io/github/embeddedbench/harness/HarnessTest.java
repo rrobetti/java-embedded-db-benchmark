@@ -178,6 +178,17 @@ class HarnessTest {
         assertTrue(((Number) ((Map<?, ?>) latency.get("read")).get("p99Nanos")).longValue() > 15_000_000);
     }
 
+    @Test void openLoopUsesTheEntireOfferedWindowWithoutRoundingExtraArrivals() throws Exception {
+        BenchmarkOptions options = options();
+        options.requestRate = 30; options.queueCapacity = 8; options.resolve();
+        var result = PhaseRunner.run(workload(new AtomicLong(), 0), Arrays.asList(new Connection[1]),
+                1, false, options, 0.3, 1);
+        var report = result.measurements().report(result.elapsedSeconds(), result.offeredSeconds());
+        assertEquals(9L, report.get("attempts"));
+        assertEquals(0.3, result.offeredSeconds(), 0.001);
+        assertTrue(result.elapsedSeconds() >= 0.3);
+    }
+
     @Test void correctnessErrorsAreFatal() {
         BenchmarkOptions options = options(); options.resolve();
         Workload workload = new Workload() {

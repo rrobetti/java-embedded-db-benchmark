@@ -116,8 +116,8 @@ final class PhaseRunner {
         long offerEnd = begin + durationNanos;
         try {
             if (options.requestRate > 0) {
-                long interval = Math.max(1, (long) (1_000_000_000.0 / options.requestRate));
                 long scheduled = begin;
+                long arrival = 0;
                 while (scheduled < begin + durationNanos && fatal.get() == null) {
                     if (options.maxOperations > 0 && issued.get() >= options.maxOperations) break;
                     long remaining;
@@ -128,7 +128,14 @@ final class PhaseRunner {
                     if (fatal.get() != null) break;
                     if (!queue.offer(new Request(scheduled))) measurements.reject();
                     issued.incrementAndGet();
-                    scheduled += interval;
+                    scheduled = begin + (long) (++arrival * 1_000_000_000.0 / options.requestRate);
+                }
+                if (options.maxOperations == 0 || issued.get() < options.maxOperations) {
+                    long remaining;
+                    while ((remaining = begin + durationNanos - System.nanoTime()) > 0 && fatal.get() == null) {
+                        if (Thread.currentThread().isInterrupted()) throw new InterruptedException("Arrival scheduler interrupted");
+                        LockSupport.parkNanos(Math.min(remaining, 10_000_000L));
+                    }
                 }
                 offerEnd = Math.min(System.nanoTime(), begin + durationNanos);
             }

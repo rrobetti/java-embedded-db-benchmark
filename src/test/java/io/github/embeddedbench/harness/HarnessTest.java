@@ -402,6 +402,27 @@ class HarnessTest {
         assertEquals(10L, ((Map<?, ?>) result.get("measurement")).get("successes"));
     }
 
+    @Test void reclamationChildRecordsValidatedDeleteIdleAndReloadStages() throws Exception {
+        BenchmarkOptions options = options();
+        options.output = directory(); options.rows = 7L; options.payload = 16;
+        options.engines = List.of("h2"); options.scenarios = List.of("memory-reclamation");
+        options.reclamationCycles = 2; options.idleSeconds = 0; options.loadCommitInterval = 5;
+        options.runId = "reclamation"; options.resolve();
+        Map<String, Object> result = ChildRunner.run(options);
+        assertEquals("OK", result.get("status"));
+        assertEquals(true, result.get("valid"));
+        List<?> stages = (List<?>) result.get("reclamation");
+        assertEquals(6, stages.size());
+        for (Object value : stages) {
+            Map<?, ?> stage = (Map<?, ?>) value;
+            assertEquals("OK", stage.get("status"));
+            assertNotNull(stage.get("afterDelete"));
+            assertNotNull(stage.get("afterIdle"));
+            assertNotNull(stage.get("afterReinsert"));
+        }
+        assertTrue(HistogramAggregation.merge(options.output, List.of(result)).isEmpty());
+    }
+
     @Test void compatibleHistogramsAreMergedNotPercentilesAveraged() throws Exception {
         Path directory = directory();
         var results = new ArrayList<Map<String, Object>>();

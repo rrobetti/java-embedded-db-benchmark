@@ -216,6 +216,29 @@ warmup and 60 seconds measurement. `--queue-capacity` bounds queued arrivals;
 appropriate to the machine rather than interpreting a short CI run as a
 production saturation result.
 
+### Memory reclamation
+
+The reclamation runner repeatedly deletes 25%, 50%, then 100% of base rows
+across the relational dataset, observes an idle period, restores the exact
+seeded data and validates it. Each percentage starts with the restored full
+dataset. Counts are rounded up to whole base rows; one additional order item
+is removed at a partial-deletion boundary to preserve foreign keys. No
+explicit GC, compaction or vacuum is performed.
+
+```bash
+bash scripts/scenarios/memory-reclamation.sh --engines h2,sqlite \
+  --rows 1000 --cycles 2 --idle-seconds 5 \
+  --output research-results/reclamation
+```
+
+PowerShell: `./scripts/scenarios/memory-reclamation.ps1` accepts the same
+arguments. Defaults are 100,000 rows, three cycles and 30 seconds idle after
+each deletion. `--dry-run`, `--resume` and `--rerun-failed` are supported.
+Reports compare process RSS and heap after load, deletion, idle and
+reinsertion. A fall in RSS is observed release; retained memory is not by
+itself evidence of a leak. Set a child deadline long enough for loading,
+all idle periods and validations.
+
 On an otherwise idle 32 GiB, 12-logical-CPU Linux workstation, keep substantial
 headroom for the OS and other processes, for example use `--memory-budget 6g
 --jvm-heap 2g` and an externally configured CPU/memory scope. The benchmark

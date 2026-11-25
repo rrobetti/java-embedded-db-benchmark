@@ -3,6 +3,7 @@ package io.github.embeddedbench.harness;
 import io.github.embeddedbench.db.DatabaseAdapter;
 import io.github.embeddedbench.db.DatabaseAdapters;
 import io.github.embeddedbench.db.DeterministicDataset;
+import io.github.embeddedbench.db.DatasetReclamation;
 import io.github.embeddedbench.db.XaProbe;
 import io.github.embeddedbench.workload.Workload;
 import io.github.embeddedbench.workload.Workloads;
@@ -138,6 +139,12 @@ final class ChildRunner {
             result.put("datasetValidationNanos", System.nanoTime() - time);
             result.put("datasetValid", true);
             stages.put("load", Resources.snapshot(databaseDirectory));
+            if (options.scenarios.getFirst().equals("memory-reclamation")) {
+                runReclamation(setup, options, databaseDirectory, sampler, result);
+                result.put("valid", true);
+                result.put("status", "OK");
+                return result;
+            }
             workload = Workloads.create(options.scenarios.getFirst(), options.rows, options.rangeRows,
                     options.readPercent, options.analyticalPercent, options.transactionSize, options.seed);
             workload.prepare(setup);
@@ -233,6 +240,45 @@ final class ChildRunner {
         result.put("shutdownError", Measurements.describe(error));
         if (failure != null) failure.addSuppressed(error);
         return failure == null ? error : failure;
+    }
+
+    private static void runReclamation(Connection connection, BenchmarkOptions options, Path databaseDirectory,
+                                       ResourceSampler sampler, Map<String, Object> result) throws Exception {
+        var cycles = new ArrayList<Map<String, Object>>();
+        result.put("reclamation", cycles);
+        result.put("reclamationSemantics", "Each stage deletes a suffix across all six tables in one transaction, "
+                + "including a boundary order item required for foreign-key integrity, then restores and validates "
+                + "the exact seeded dataset. No explicit GC, vacuum or compaction is performed.");
+        for (int cycle = 1; cycle <= options.reclamationCycles; cycle++) {
+            for (int percentage : new int[]{25, 50, 100}) {
+                long removed = options.rows / 100 * percentage + (options.rows % 100 * percentage + 99) / 100;
+                long first = options.rows - removed + 1;
+                var stage = new LinkedHashMap<String, Object>();
+                stage.put("cycle", cycle); stage.put("requestedPercent", percentage);
+                stage.put("removedBaseRows", removed); stage.put("firstRemovedBaseRow", first);
+                stage.put("status", "IN_PROGRESS");
+                cycles.add(stage);
+                sampler.phase("reclamation-deletion");
+                long start = System.nanoTime();
+                DatasetReclamation.deleteSuffix(connection, options.rows, first);
+                stage.put("deleteNanos", System.nanoTime() - start);
+                stage.put("afterDelete", Resources.snapshot(databaseDirectory));
+                sampler.phase("reclamation-idle");
+                Thread.sleep(java.time.Duration.ofNanos((long) (options.idleSeconds * 1_000_000_000L)));
+                stage.put("afterIdle", Resources.snapshot(databaseDirectory));
+                sampler.phase("reclamation-reinsert");
+                start = System.nanoTime();
+                DeterministicDataset.loadSuffix(connection, options.rows, first, options.payload, options.seed,
+                        options.batch, options.loadMode, options.loadCommitInterval);
+                stage.put("reinsertNanos", System.nanoTime() - start);
+                stage.put("afterReinsert", Resources.snapshot(databaseDirectory));
+                sampler.phase("validation");
+                start = System.nanoTime();
+                DeterministicDataset.validate(connection, options.rows, options.payload, options.seed);
+                stage.put("validationNanos", System.nanoTime() - start);
+                stage.put("status", "OK");
+            }
+        }
     }
 
     private static PhaseRunner.Result executePhase(Workload workload, java.util.List<Connection> connections, int workers,

@@ -35,7 +35,18 @@ public final class DeterministicDataset {
 
     public static void load(Connection connection, long rows, int payloadSize, long seed, int batchSize, String mode,
                             long commitInterval) throws SQLException {
+        loadSuffix(connection, rows, 1, payloadSize, seed, batchSize, mode, commitInterval);
+    }
+
+    /**
+     * Restores a deleted suffix and the preceding order item that referenced
+     * its first product. The retained prefix must otherwise be unchanged.
+     */
+    public static void loadSuffix(Connection connection, long rows, long first, int payloadSize, long seed,
+                                  int batchSize, String mode, long commitInterval) throws SQLException {
         checkArguments(rows, payloadSize);
+        if (first < 1 || first > Math.max(1, rows))
+            throw new IllegalArgumentException("Invalid suffix start");
         if (!"batch".equals(mode) && !"prepared".equals(mode) && !"individual".equals(mode)) {
             throw new IllegalArgumentException("Supported ingestion modes: batch, prepared, individual; got " + mode);
         }
@@ -56,30 +67,31 @@ public final class DeterministicDataset {
         try {
             int effectiveBatchSize = "prepared".equals(mode) ? 0 : batchSize;
             LoadCommits commits = new LoadCommits(connection, commitInterval);
-            insert(connection, "INSERT INTO customers VALUES (?,?,?,?,?)", rows, effectiveBatchSize, mode, commits, (statement, id) -> {
+            insert(connection, "INSERT INTO customers VALUES (?,?,?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setString(2, customerName(id));
                 statement.setString(3, email(id));
                 statement.setString(4, notes(id));
                 statement.setBytes(5, payload(id, payloadSize, seed));
             });
-            insert(connection, "INSERT INTO accounts VALUES (?,?,?)", rows, effectiveBatchSize, mode, commits, (statement, id) -> {
+            insert(connection, "INSERT INTO accounts VALUES (?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setLong(2, id);
                 statement.setBigDecimal(3, balance(id, seed));
             });
-            insert(connection, "INSERT INTO products VALUES (?,?,?)", rows, effectiveBatchSize, mode, commits, (statement, id) -> {
+            insert(connection, "INSERT INTO products VALUES (?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setString(2, productName(id));
                 statement.setBigDecimal(3, price(id, seed));
             });
-            insert(connection, "INSERT INTO orders VALUES (?,?,?,?)", rows, effectiveBatchSize, mode, commits, (statement, id) -> {
+            insert(connection, "INSERT INTO orders VALUES (?,?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setLong(2, id);
                 statement.setTimestamp(3, timestamp(id));
                 statement.setString(4, status(id));
             });
-            insert(connection, "INSERT INTO order_items VALUES (?,?,?,?)", Math.multiplyExact(rows, 2), effectiveBatchSize, mode, commits,
+            insert(connection, "INSERT INTO order_items VALUES (?,?,?,?)", first == 1 ? 1 : Math.multiplyExact(first - 1, 2),
+                    Math.multiplyExact(rows, 2), effectiveBatchSize, mode, commits,
                     (statement, id) -> {
                         long orderId = (id + 1) / 2;
                         statement.setLong(1, id);
@@ -87,7 +99,7 @@ public final class DeterministicDataset {
                         statement.setLong(3, itemProduct(id, rows));
                         statement.setInt(4, quantity(id, seed));
                     });
-            insert(connection, "INSERT INTO financial_transactions VALUES (?,?,?,?)", rows, effectiveBatchSize, mode, commits,
+            insert(connection, "INSERT INTO financial_transactions VALUES (?,?,?,?)", first, rows, effectiveBatchSize, mode, commits,
                     (statement, id) -> {
                         statement.setLong(1, id);
                         statement.setLong(2, id);
@@ -224,16 +236,16 @@ public final class DeterministicDataset {
         }
     }
 
-    private static void insert(Connection connection, String sql, long rows, int batchSize, String mode,
+    private static void insert(Connection connection, String sql, long first, long last, int batchSize, String mode,
                                LoadCommits commits, Binder binder)
             throws SQLException {
         if ("individual".equals(mode)) {
-            insertIndividual(connection, sql, rows, commits, binder);
+            insertIndividual(connection, sql, first, last, commits, binder);
             return;
         }
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             int pending = 0;
-            for (long id = 1; id <= rows; id++) {
+            for (long id = first; id <= last; id++) {
                 binder.bind(statement, id);
                 if (batchSize == 0) {
                     statement.executeUpdate();
@@ -255,7 +267,8 @@ public final class DeterministicDataset {
         }
     }
 
-    private static void insertIndividual(Connection connection, String template, long rows, LoadCommits commits, Binder binder)
+    private static void insertIndividual(Connection connection, String template, long first, long last,
+                                         LoadCommits commits, Binder binder)
             throws SQLException {
         Object[] values = new Object[(int) template.chars().filter(character -> character == '?').count()];
         PreparedStatement parameters = (PreparedStatement) Proxy.newProxyInstance(
@@ -273,7 +286,7 @@ public final class DeterministicDataset {
         boolean postgres = "PostgreSQL".equalsIgnoreCase(product);
         String prefix = template.substring(0, template.indexOf('(') + 1);
         try (Statement statement = connection.createStatement()) {
-            for (long id = 1; id <= rows; id++) {
+            for (long id = first; id <= last; id++) {
                 binder.bind(parameters, id);
                 StringBuilder sql = new StringBuilder(prefix);
                 for (int index = 0; index < values.length; index++) {

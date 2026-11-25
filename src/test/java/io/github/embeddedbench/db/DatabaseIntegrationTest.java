@@ -204,6 +204,24 @@ class DatabaseIntegrationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"h2", "hsqldb", "sqlite", "pglite"})
+    void reclamationDeletesAndRestoresExactRelationalSuffixes(String engine) throws Exception {
+        try (DatabaseAdapter adapter = DatabaseAdapters.create(engine, "default")) {
+            adapter.initialize();
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                DeterministicDataset.load(connection, 7, 16, 42, 3, "batch", 5);
+                for (long first : new long[]{6, 4, 1}) {
+                    DatasetReclamation.deleteSuffix(connection, 7, first);
+                    DeterministicDataset.loadSuffix(connection, 7, first, 16, 42, 3, "batch", 5);
+                    DeterministicDataset.validate(connection, 7, 16, 42);
+                    assertTrue(connection.getAutoCommit());
+                }
+            }
+        }
+    }
+
     @Test
     void streamingLoaderModesLogicalAccountingAndCorruptionDetection() throws Exception {
         assertEquals(0, DeterministicDataset.logicalBytes(0, 32));

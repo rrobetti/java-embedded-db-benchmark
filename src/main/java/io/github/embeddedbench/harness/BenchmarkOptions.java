@@ -29,6 +29,10 @@ public final class BenchmarkOptions {
     long loadCommitInterval;
     @Option(names = "--sample-interval", description = "Resource sampling interval in seconds")
     double sampleInterval = 1;
+    @Option(names = "--reclamation-cycles", description = "Repeated deletion/reinsertion cycles")
+    int reclamationCycles = 1;
+    @Option(names = "--idle-seconds", description = "Idle time after each reclamation deletion")
+    double idleSeconds = 30;
     @Option(names = {"--transaction-size", "--transaction"}) Integer transactionSize;
     @Option(names = {"--request-rate", "--rate"}, description = "Requests/sec; zero selects closed-loop") double requestRate;
     @Option(names = "--fixed-read-rate", description = "Open-loop read arrivals/sec for rw-* workloads") double fixedReadRate;
@@ -88,6 +92,8 @@ public final class BenchmarkOptions {
         output = output.toAbsolutePath().normalize();
         if (rows < 1 || payload < 1 || threads < 1 || connections < 1 || connections > threads || batch < 1
                 || transactionSize < 1 || loadCommitInterval < 0 || sampleInterval < 0.1 || sampleInterval > 3600
+                || reclamationCycles < 1 || reclamationCycles > 1000 || idleSeconds < 0 || idleSeconds > 14400
+                || !Double.isFinite(idleSeconds)
                 || !Double.isFinite(sampleInterval) || duration <= 0 || warmup < 0 || !Double.isFinite(duration)
                 || !Double.isFinite(warmup) || maxOperations < 0 || repetitions < 1 || requestRate < 0
                 || !Double.isFinite(requestRate) || requestRate > 1_000_000 || fixedReadRate < 0
@@ -146,6 +152,7 @@ public final class BenchmarkOptions {
         m.put("rows", rows); m.put("payloadBytes", payload); m.put("threads", threads);
         m.put("connections", connections); m.put("batchSize", batch); m.put("loadCommitInterval", loadCommitInterval);
         m.put("sampleIntervalSeconds", sampleInterval);
+        m.put("reclamationCycles", reclamationCycles); m.put("idleSeconds", idleSeconds);
         m.put("transactionSize", transactionSize);
         m.put("requestRate", requestRate); m.put("fixedReadRate", fixedReadRate);
         m.put("readerWorkers", readerWorkers); m.put("queueCapacity", queueCapacity);

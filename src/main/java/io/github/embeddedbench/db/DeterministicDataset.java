@@ -12,6 +12,7 @@ import java.sql.Timestamp;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.lang.reflect.Proxy;
+import java.util.function.LongConsumer;
 
 /**
  * Generates customers/accounts/products/orders/transactions at N rows each and
@@ -35,7 +36,12 @@ public final class DeterministicDataset {
 
     public static void load(Connection connection, long rows, int payloadSize, long seed, int batchSize, String mode,
                             long commitInterval) throws SQLException {
-        loadSuffix(connection, rows, 1, payloadSize, seed, batchSize, mode, commitInterval);
+        load(connection, rows, payloadSize, seed, batchSize, mode, commitInterval, count -> {});
+    }
+
+    public static void load(Connection connection, long rows, int payloadSize, long seed, int batchSize, String mode,
+                            long commitInterval, LongConsumer progress) throws SQLException {
+        loadSuffix(connection, rows, 1, payloadSize, seed, batchSize, mode, commitInterval, progress);
     }
 
     /**
@@ -44,6 +50,11 @@ public final class DeterministicDataset {
      */
     public static void loadSuffix(Connection connection, long rows, long first, int payloadSize, long seed,
                                   int batchSize, String mode, long commitInterval) throws SQLException {
+        loadSuffix(connection, rows, first, payloadSize, seed, batchSize, mode, commitInterval, count -> {});
+    }
+
+    private static void loadSuffix(Connection connection, long rows, long first, int payloadSize, long seed,
+                                   int batchSize, String mode, long commitInterval, LongConsumer progress) throws SQLException {
         checkArguments(rows, payloadSize);
         if (first < 1 || first > Math.max(1, rows))
             throw new IllegalArgumentException("Invalid suffix start");
@@ -66,7 +77,7 @@ public final class DeterministicDataset {
         Throwable failure = null;
         try {
             int effectiveBatchSize = "prepared".equals(mode) ? 0 : batchSize;
-            LoadCommits commits = new LoadCommits(connection, commitInterval);
+            LoadCommits commits = new LoadCommits(connection, commitInterval, progress);
             insert(connection, "INSERT INTO customers VALUES (?,?,?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setString(2, customerName(id));
@@ -143,12 +154,25 @@ public final class DeterministicDataset {
         if (ownedTransaction) {
             connection.setAutoCommit(false);
         }
+        Throwable failure = null;
         try {
             validateRows(connection, rows, payloadSize, seed);
+        } catch (SQLException | RuntimeException | Error error) {
+            failure = error;
+            throw error;
         } finally {
             if (ownedTransaction) {
-                connection.rollback();
-                connection.setAutoCommit(true);
+                try { connection.rollback(); }
+                catch (SQLException | RuntimeException error) {
+                    if (failure == null) failure = error; else failure.addSuppressed(error);
+                }
+                try { connection.setAutoCommit(true); }
+                catch (SQLException | RuntimeException error) {
+                    if (failure == null) failure = error; else failure.addSuppressed(error);
+                }
+                if (failure instanceof SQLException error) throw error;
+                if (failure instanceof RuntimeException error) throw error;
+                if (failure instanceof Error error) throw error;
             }
         }
     }
@@ -304,11 +328,13 @@ public final class DeterministicDataset {
     private static final class LoadCommits {
         private final Connection connection;
         private final long interval;
-        private long sinceCommit;
+        private final LongConsumer progress;
+        private long sinceCommit, total;
 
-        private LoadCommits(Connection connection, long interval) {
+        private LoadCommits(Connection connection, long interval, LongConsumer progress) {
             this.connection = connection;
             this.interval = interval;
+            this.progress = java.util.Objects.requireNonNull(progress);
         }
 
         private boolean reachesBoundary(int pending) {
@@ -316,6 +342,8 @@ public final class DeterministicDataset {
         }
 
         private void inserted(int count) throws SQLException {
+            total = Math.addExact(total, count);
+            progress.accept(total);
             if (interval == 0) return;
             sinceCommit += count;
             if (sinceCommit == interval) {

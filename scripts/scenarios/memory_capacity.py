@@ -144,7 +144,12 @@ def run_supervisor(command, directory):
                                    start_new_session=os.name != "nt",
                                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
         try:
-            return process.wait()
+            started = time.monotonic()
+            while True:
+                try:
+                    return process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    print_progress(directory, time.monotonic() - started)
         except BaseException:
             if os.name == "nt":
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -165,6 +170,37 @@ def run_supervisor(command, directory):
                 process.kill()
                 process.wait()
             raise
+
+
+def print_progress(directory, elapsed):
+    paths = list((directory / "runs").glob("*/*/resources.jsonl"))
+    if not paths:
+        print(f"  elapsed={elapsed:.0f}s phase=initializing resources=unavailable", flush=True)
+        return
+    try:
+        path = max(paths, key=lambda value: value.stat().st_mtime_ns)
+        with path.open("rb") as file:
+            file.seek(0, os.SEEK_END)
+            size = file.tell()
+            file.seek(max(0, size - 131072))
+            data = file.read()
+        lines = data.split(b"\n")
+        # A concurrent write may leave the last line incomplete.
+        completed = lines[:-1]
+        if not completed:
+            print(f"  elapsed={elapsed:.0f}s phase=initializing resources=unavailable", flush=True)
+            return
+        sample = json.loads(completed[-1])
+        load = sample.get("processCpuLoad")
+        cpu = f"{load * 100:.1f}%" if isinstance(load, (int, float)) else "unavailable"
+        def display(key):
+            value = sample.get(key)
+            return str(value) if value is not None else "unavailable"
+        print(f"  elapsed={elapsed:.0f}s phase={display('phase')} recordsLoaded={display('recordsLoaded')} "
+              f"childRssBytes={display('rssBytes')} childPeakRssBytes={display('peakRssBytes')} "
+              f"childCpuLoad={cpu}", flush=True)
+    except (OSError, ValueError, UnicodeDecodeError) as error:
+        print(f"  elapsed={elapsed:.0f}s progress sample unavailable: {error}", file=sys.stderr, flush=True)
 
 
 def write_reports(output, manifest):

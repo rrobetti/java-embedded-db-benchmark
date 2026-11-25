@@ -22,6 +22,7 @@ final class ResourceSampler implements AutoCloseable {
     private final long intervalMillis;
     private volatile String phase = "initialization";
     private volatile boolean stopping;
+    private volatile long recordsLoaded = -1;
     private IOException failure;
     private List<Measurements> performanceSources = List.of();
     private List<Measurements.Sample> previous = List.of();
@@ -40,6 +41,8 @@ final class ResourceSampler implements AutoCloseable {
         this.phase = phase;
         sample();
     }
+
+    void recordsLoaded(long records) { recordsLoaded = records; }
 
     synchronized void startPerformance(List<Measurements> sources) throws IOException {
         if (!performanceSources.isEmpty()) throw new IllegalStateException("Performance phase already active");
@@ -78,6 +81,7 @@ final class ResourceSampler implements AutoCloseable {
         var m = new LinkedHashMap<String, Object>();
         m.put("timestamp", Instant.now().toString());
         m.put("phase", phase);
+        m.put("recordsLoaded", recordsLoaded < 0 ? null : recordsLoaded);
         long pid = ProcessHandle.current().pid();
         m.put("rssBytes", Resources.procValue(pid, "VmRSS:"));
         m.put("peakRssBytes", Resources.procValue(pid, "VmHWM:"));

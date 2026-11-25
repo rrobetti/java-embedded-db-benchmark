@@ -310,6 +310,23 @@ class HarnessTest {
         assertTrue(loading >= 3, "phase boundaries and periodic samples must be recorded");
     }
 
+    @Test void supervisorSamplerSeparatesSupervisorAndChild() throws Exception {
+        Process child = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                "-version").start();
+        Path file = directory().resolve("supervisor.jsonl");
+        try (var sampler = new SupervisorSampler(file, child, System.nanoTime())) {
+            sampler.sample();
+        } finally {
+            child.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            if (child.isAlive()) child.destroyForcibly();
+        }
+        Map<?, ?> sample = (Map<?, ?>) Json.decode(Files.readAllLines(file).getFirst());
+        assertEquals(ProcessHandle.current().pid(), ((Map<?, ?>) sample.get("supervisor")).get("pid"));
+        assertEquals(child.pid(), ((Map<?, ?>) sample.get("child")).get("pid"));
+        assertTrue(sample.containsKey("liveTreeRssBytes"));
+        assertTrue(sample.containsKey("childCpuCoreEquivalent"));
+    }
+
     @Test void samplerReportsIntervalOperationsAndIndependentLatencyHistograms() throws Exception {
         Path file = directory().resolve("performance.jsonl");
         var measurements = new Measurements();
@@ -365,6 +382,9 @@ class HarnessTest {
         }
         assertTrue(phases.containsAll(List.of("initialization", "loading", "validation",
                 "warmup", "measurement", "deletion", "shutdown")));
+        assertTrue(samples.stream().map(Json::decode).map(sample -> (Map<?, ?>) sample)
+                .anyMatch(sample -> "validation".equals(sample.get("phase"))
+                        && Long.valueOf(70).equals(sample.get("recordsLoaded"))));
         long sampledSuccesses = samples.stream().map(Json::decode).map(sample -> (Map<?, ?>) sample)
                 .filter(sample -> "measurement".equals(sample.get("phase")))
                 .map(sample -> (Map<?, ?>) sample.get("performance"))

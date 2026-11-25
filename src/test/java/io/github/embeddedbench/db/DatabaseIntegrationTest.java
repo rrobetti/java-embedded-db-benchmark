@@ -42,6 +42,28 @@ class DatabaseIntegrationTest {
         assertArrayEquals(new Throwable[]{rollback, restore}, actual.getSuppressed());
     }
 
+    @Test
+    void validatorPreservesOriginalFailureWhenCleanupAlsoFails() throws Exception {
+        SQLException original = new SQLException("validation failed");
+        SQLException rollback = new SQLException("rollback failed");
+        SQLException restore = new SQLException("restore failed");
+        Connection connection = (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, arguments) -> switch (method.getName()) {
+                    case "getAutoCommit" -> true;
+                    case "setAutoCommit" -> {
+                        if ((boolean) arguments[0]) throw restore;
+                        yield null;
+                    }
+                    case "createStatement" -> throw original;
+                    case "rollback" -> throw rollback;
+                    default -> throw new AssertionError("Unexpected method: " + method.getName());
+                });
+        SQLException actual = assertThrows(SQLException.class,
+                () -> DeterministicDataset.validate(connection, 1, 1, 42));
+        assertSame(original, actual);
+        assertArrayEquals(new Throwable[]{rollback, restore}, actual.getSuppressed());
+    }
+
     @ParameterizedTest(name = "{0} / {1}")
     @CsvSource({"h2,default", "hsqldb,default", "hsqldb,mvcc", "hsqldb,locks", "sqlite,default", "pglite,default"})
     void realEngineRoundTripConstraintsTransactionsAndCapabilities(String id, String profile) throws Exception {
@@ -192,7 +214,11 @@ class DatabaseIntegrationTest {
                             try { return method.invoke(connection, args); }
                             catch (java.lang.reflect.InvocationTargetException e) { throw e.getCause(); }
                         });
-                DeterministicDataset.load(counting, 13, 16, 42, 5, mode, 7);
+                var progress = new java.util.ArrayList<Long>();
+                DeterministicDataset.load(counting, 13, 16, 42, 5, mode, 7, progress::add);
+                assertEquals(91L, progress.getLast());
+                assertTrue(java.util.stream.IntStream.range(1, progress.size())
+                        .allMatch(i -> progress.get(i) > progress.get(i - 1)));
                 assertEquals(14, commits.get()); // 91 records, plus the final transaction commit
                 DeterministicDataset.validate(connection, 13, 16, 42);
                 connection.setAutoCommit(false);

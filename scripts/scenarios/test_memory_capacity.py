@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 
 import memory_capacity as capacity
 
@@ -57,6 +59,21 @@ class CapacityTest(unittest.TestCase):
             capacity.parse_args(["--sizes", "20,10"])
         with self.assertRaises(SystemExit):
             capacity.parse_args(["--engines", "h2,unknown"])
+
+    def test_progress_uses_last_complete_sample(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "runs" / "suite" / "child"
+            path.mkdir(parents=True)
+            (path / "resources.jsonl").write_text(json.dumps({
+                "phase": "loading", "recordsLoaded": 70, "rssBytes": 123,
+                "peakRssBytes": 150, "processCpuLoad": 0.25}) + "\n{\"phase\":",
+                encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                capacity.print_progress(Path(tmp), 12)
+            self.assertIn("phase=loading", output.getvalue())
+            self.assertIn("recordsLoaded=70", output.getvalue())
+            self.assertIn("childCpuLoad=25.0%", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -126,10 +126,11 @@ final class ChildRunner {
             adapter.createSchema(setup);
             timings.put("schema", System.nanoTime() - time);
             stages.put("schema", Resources.snapshot(databaseDirectory));
+            sampler.recordsLoaded(0);
             sampler.phase("loading");
             time = System.nanoTime();
             DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode,
-                    options.loadCommitInterval);
+                    options.loadCommitInterval, sampler::recordsLoaded);
             long loadNanos = System.nanoTime() - time;
             result.put("loadNanos", loadNanos);
             result.put("loadLogicalBytesPerSecond", loadNanos > 0
@@ -181,9 +182,10 @@ final class ChildRunner {
                     workload.close();
                     workload = null;
                     deleteDataset(setup);
+                    sampler.recordsLoaded(0);
                     sampler.phase("loading");
                     DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode,
-                            options.loadCommitInterval);
+                            options.loadCommitInterval, sampler::recordsLoaded);
                     DeterministicDataset.validate(setup, options.rows, options.payload, options.seed);
                     workload = Workloads.create(options.scenarios.getFirst(), options.rows, options.rangeRows,
                             options.readPercent, options.analyticalPercent, options.transactionSize, options.seed);

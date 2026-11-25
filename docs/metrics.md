@@ -59,8 +59,19 @@ throughput and success-latency percentiles by operation category, as well as
 failed and rejected counts. These are completion-window statistics: pending
 open-loop requests are not counted until completion or rejection. Interval
 histograms are snapshots of worker-local cumulative histograms and are not
-mixed across phases. Monitoring does not provide supervisor process time
-series or complete native-memory attribution.
+mixed across phases. `recordsLoaded` counts successfully executed insert
+statements/batches in the current base load, including uncommitted records;
+it is not a committed-row count. It resets after a warmup reload.
+
+Each child run also has `supervisor-resources.jsonl`, sampled at the same
+configured interval by the supervisor. It separates supervisor and child RSS,
+peak RSS and CPU time, lists observed live descendants, and reports a child
+CPU core-equivalent over the preceding sample interval. The live-tree sums
+are null if any observed process metric is unavailable; short-lived
+descendants and transient memory spikes can be missed. Summed RSS can
+double-count shared pages. CPU time for exited descendants is not retained
+in the live-tree sum. Sampling provides neither complete native-memory
+attribution nor a kernel resource limit.
 Deletion is not compaction or proof that allocated pages were returned to
 the OS. CPU/GC/I/O deltas refer to measurement, not startup/load. Normalized
 throughput divides by reported logical processors or deterministic logical

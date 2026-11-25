@@ -119,20 +119,40 @@ public final class BenchmarkCli implements Callable<Integer> {
                 .redirectError(directory.resolve("stderr.log").toFile()).start();
         String supervisorError = null;
         Long peakTotalRss = null;
-        boolean watchdogAvailable = Resources.procValue(process.pid(), "VmRSS:") != null;
-        while (process.isAlive()) {
-            Long rss = totalRss(process);
-            if (rss != null) {
-                peakTotalRss = peakTotalRss == null ? rss : Math.max(peakTotalRss, rss);
-                if (rss > budget) { supervisorError = "MEMORY_BUDGET"; break; }
+        boolean watchdogAvailable = false;
+        long incompleteWatchdogSamples = 0;
+        try {
+            try (var sampler = new SupervisorSampler(directory.resolve("supervisor-resources.jsonl"), process, start)) {
+                long nextSample = 0;
+                while (process.isAlive()) {
+                    Long rss = totalRss(process);
+                    if (rss != null) {
+                        watchdogAvailable = true;
+                        peakTotalRss = peakTotalRss == null ? rss : Math.max(peakTotalRss, rss);
+                        if (rss > budget) { supervisorError = "MEMORY_BUDGET"; break; }
+                    } else incompleteWatchdogSamples++;
+                    long now = System.nanoTime();
+                    if (now >= nextSample) {
+                        sampler.sample();
+                        nextSample = now + (long) (options.sampleInterval * 1_000_000_000L);
+                    }
+                    if (now - start > TimeUnit.SECONDS.toNanos(options.childDeadline)) {
+                        supervisorError = "CHILD_DEADLINE"; break;
+                    }
+                    process.waitFor(50, TimeUnit.MILLISECONDS);
+                }
+                if (supervisorError != null) terminate(process);
+                process.waitFor(5, TimeUnit.SECONDS);
             }
-            if (System.nanoTime() - start > TimeUnit.SECONDS.toNanos(options.childDeadline)) {
-                supervisorError = "CHILD_DEADLINE"; break;
+        } catch (Exception | Error failure) {
+            try { terminate(process); }
+            catch (InterruptedException cleanup) {
+                failure.addSuppressed(cleanup);
+                Thread.currentThread().interrupt();
             }
-            process.waitFor(50, TimeUnit.MILLISECONDS);
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+            throw failure;
         }
-        if (supervisorError != null) terminate(process);
-        process.waitFor(5, TimeUnit.SECONDS);
         Map<String, Object> result = null;
         Path resultFile = directory.resolve("result.json");
         if (Files.isRegularFile(resultFile)) {
@@ -162,7 +182,9 @@ public final class BenchmarkCli implements Callable<Integer> {
         result.put("childExitCode", process.isAlive() ? null : process.exitValue());
         result.put("supervisedWallSeconds", (System.nanoTime() - start) / 1_000_000_000.0);
         result.put("supervisorPeakTotalRssBytes", peakTotalRss);
+        result.put("supervisorResourceTimeSeries", "supervisor-resources.jsonl");
         result.put("rssWatchdogAvailable", watchdogAvailable);
+        result.put("rssWatchdogIncompleteSamples", incompleteWatchdogSamples);
         result.put("effectiveMemoryBudgetBytes", budget);
         result.put("admissionEstimateBytes", totalEstimate);
         result.put("childCommand", command);
@@ -213,7 +235,8 @@ public final class BenchmarkCli implements Callable<Integer> {
         long total = parent + child;
         for (ProcessHandle descendant : process.descendants().toList()) {
             Long rss = Resources.procValue(descendant.pid(), "VmRSS:");
-            if (rss != null) total += rss;
+            if (rss == null) return null;
+            total += rss;
         }
         return total;
     }

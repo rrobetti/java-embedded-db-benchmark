@@ -96,7 +96,9 @@ command with `--resume`, optionally adding `--rerun-failed`. Manifests
 check the plan, runner and jar hashes, Git state, machine and effective CPU
 affinity; use a new directory when these change. Individual scenario reports
 are written as runs finish, and the consolidated reports update after each
-scenario. The PowerShell entry point is `scripts/run-research.ps1`.
+scenario. Long-running child processes print elapsed time, phase, executed
+load records, child RSS/peak RSS and CPU load approximately every ten seconds.
+The PowerShell entry point is `scripts/run-research.ps1`.
 
 `research.json`, `.csv`, `.md` and `.html` preserve scenario evidence and
 link to offline charts and raw artifacts. Missing, failed, unsupported and

@@ -287,6 +287,32 @@ reinsertion. A fall in RSS is observed release; retained memory is not by
 itself evidence of a leak. Set a child deadline long enough for loading,
 all idle periods and validations.
 
+### Endurance
+
+The endurance runner uses a bounded extra cache table with closed-loop reads
+and writes (95% reads by default). At each maintenance interval, a worker
+refreshes retained entries and transactionally deletes and reinserts 10%
+using a deterministic synthetic expiration cutoff, then checks an aggregate.
+The original seeded dataset and cache invariants are validated. Readers must
+not observe missing entries. Maintenance is counted separately and resource
+samples mark its boundaries. The fixture has eight records per base row,
+including the extra cache entry; it is not a production cache implementation.
+
+```bash
+bash scripts/scenarios/endurance.sh --engines h2,hsqldb,sqlite,pglite \
+  --rows 100000 --workers 4 --duration 3600 --maintenance-interval 60 \
+  --memory-budget 6g --jvm-heap 2g --output research-results/endurance
+```
+
+The PowerShell equivalent is `scripts/scenarios/endurance.ps1`. Durations of
+1,800, 3,600, 14,400 and 28,800 seconds are supported; use `--dry-run`
+before a long run. `--resume` and `--rerun-failed` preserve prior attempts.
+Reports include offline time-series charts and raw samples. Maintenance and
+its boundary sampling add overhead, and occasional engine lock errors are
+reported rather than retried. A sampled RSS increase or retained memory is
+not by itself evidence of a leak; repeat long runs and inspect GC, maintenance
+boundaries and logical dataset size before drawing conclusions.
+
 On an otherwise idle 32 GiB, 12-logical-CPU Linux workstation, keep substantial
 headroom for the OS and other processes, for example use `--memory-budget 6g
 --jvm-heap 2g` and an externally configured CPU/memory scope. The benchmark

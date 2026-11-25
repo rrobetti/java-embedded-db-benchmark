@@ -263,6 +263,7 @@ public final class BenchmarkCli implements Callable<Integer> {
         add(command, "--refresh-strategy", options.refreshStrategy); add(command, "--refresh-percent", options.refreshPercent);
         add(command, "--refresh-before", options.refreshBefore); add(command, "--refresh-after", options.refreshAfter);
         add(command, "--refresh-read-rate", options.refreshReadRate);
+        add(command, "--maintenance-interval", options.maintenanceInterval);
         add(command, "--transaction-size", options.transactionSize); add(command, "--request-rate", options.requestRate);
         add(command, "--fixed-read-rate", options.fixedReadRate);
         if (options.readerWorkers != null) add(command, "--reader-workers", options.readerWorkers);

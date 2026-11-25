@@ -101,6 +101,17 @@ may expose absence, but replacement must not. The final cache and the
 original seeded dataset are validated. These are single-row observations,
 not proof of a multi-row snapshot.
 
+`endurance-cache` adds one numeric cache entry per base row. Workers use
+closed-loop point reads and updates; after warmup, a periodically selected
+worker updates the retained range and transactionally deletes and reinserts
+the first 10%, simulating bulk invalidation and expiration using a synthetic
+cutoff. An aggregate validates counts, IDs, generations and expiry fields
+inside each maintenance transaction. Final validation checks the bounded cache
+and the unchanged original seeded dataset. Maintenance has its own latency
+category and boundary samples, whose overhead is included in maintenance
+latency. It is not a TTL clock simulation or a proof of multi-row reader
+snapshot isolation.
+
 `upsert` chooses existing-row updates or unique new-row inserts with equal
 probability. It uses portable JDBC UPDATE followed by conditional INSERT
 in one transaction, not a vendor-specific conflict clause or silent retry.

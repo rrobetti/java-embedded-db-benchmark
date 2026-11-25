@@ -43,6 +43,8 @@ public final class BenchmarkOptions {
     double refreshAfter = 10;
     @Option(names = "--refresh-read-rate", description = "Paced closed-loop reads/sec across refresh readers; 0 is unpaced")
     double refreshReadRate;
+    @Option(names = "--maintenance-interval", description = "Seconds between endurance maintenance cycles")
+    double maintenanceInterval = 60;
     @Option(names = {"--transaction-size", "--transaction"}) Integer transactionSize;
     @Option(names = {"--request-rate", "--rate"}, description = "Requests/sec; zero selects closed-loop") double requestRate;
     @Option(names = "--fixed-read-rate", description = "Open-loop read arrivals/sec for rw-* workloads") double fixedReadRate;
@@ -107,12 +109,13 @@ public final class BenchmarkOptions {
                 || refreshPercent < 1 || refreshPercent > 100 || refreshBefore < 0 || refreshBefore > 14400
                 || refreshAfter < 0 || refreshAfter > 14400 || !Double.isFinite(refreshBefore) || !Double.isFinite(refreshAfter)
                 || refreshReadRate < 0 || refreshReadRate > 1_000_000 || !Double.isFinite(refreshReadRate)
+                || maintenanceInterval < 0.1 || maintenanceInterval > 28800 || !Double.isFinite(maintenanceInterval)
                 || !Double.isFinite(sampleInterval) || duration <= 0 || warmup < 0 || !Double.isFinite(duration)
                 || !Double.isFinite(warmup) || maxOperations < 0 || repetitions < 1 || requestRate < 0
                 || !Double.isFinite(requestRate) || requestRate > 1_000_000 || fixedReadRate < 0
                 || !Double.isFinite(fixedReadRate) || queueCapacity < 1
                 || childDeadline < 1 || rangeRows < 1 || readPercent < 0 || readPercent > 100
-                || analyticalPercent < 0 || analyticalPercent > 100 || duration > 14_400 || warmup > 14_400)
+                || analyticalPercent < 0 || analyticalPercent > 100 || duration > 28_800 || warmup > 14_400)
             throw new IllegalArgumentException("Invalid benchmark bounds/percentages; connections must not exceed threads");
         if (!List.of("auto", "dedicated", "pooled", "serialized").contains(connectionMode))
             throw new IllegalArgumentException("connection-mode must be auto, dedicated, pooled or serialized");
@@ -172,6 +175,7 @@ public final class BenchmarkOptions {
         m.put("refreshStrategy", refreshStrategy); m.put("refreshPercent", refreshPercent);
         m.put("refreshBeforeSeconds", refreshBefore); m.put("refreshAfterSeconds", refreshAfter);
         m.put("refreshReadRate", refreshReadRate);
+        m.put("maintenanceIntervalSeconds", maintenanceInterval);
         m.put("transactionSize", transactionSize);
         m.put("requestRate", requestRate); m.put("fixedReadRate", fixedReadRate);
         m.put("readerWorkers", readerWorkers); m.put("queueCapacity", queueCapacity);

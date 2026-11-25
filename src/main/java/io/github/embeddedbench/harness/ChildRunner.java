@@ -7,6 +7,7 @@ import io.github.embeddedbench.db.DatasetReclamation;
 import io.github.embeddedbench.db.XaProbe;
 import io.github.embeddedbench.workload.Workload;
 import io.github.embeddedbench.workload.Workloads;
+import io.github.embeddedbench.workload.EnduranceWorkload;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
@@ -157,8 +158,11 @@ final class ChildRunner {
                         ? "OK" : "COMPLETED_WITH_ERRORS");
                 return result;
             }
-            workload = Workloads.create(options.scenarios.getFirst(), options.rows, options.rangeRows,
-                    options.readPercent, options.analyticalPercent, options.transactionSize, options.seed);
+            workload = options.scenarios.getFirst().equals("endurance-cache")
+                    ? new EnduranceWorkload(options.rows, options.payload, options.seed, options.batch,
+                            options.loadCommitInterval, options.readPercent, options.maintenanceInterval)
+                    : Workloads.create(options.scenarios.getFirst(), options.rows, options.rangeRows,
+                            options.readPercent, options.analyticalPercent, options.transactionSize, options.seed);
             workload.prepare(setup);
             int actualConnections = serialized ? 1 : options.connections;
             for (int i = 1; i < actualConnections; i++) connections.add(adapter.openConnection());
@@ -169,7 +173,9 @@ final class ChildRunner {
                 sampler.phase("validation");
                 workload.validate(setup);
                 result.put("warmupValid", true);
-                if (!java.util.Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte", "aggregate", "rollback")
+                if (workload instanceof EnduranceWorkload endurance) {
+                    endurance.resetAfterWarmup(setup);
+                } else if (!java.util.Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte", "aggregate", "rollback")
                         .contains(options.scenarios.getFirst())) {
                     time = System.nanoTime();
                     workload.close();
@@ -188,6 +194,13 @@ final class ChildRunner {
             }
             Map<String, Object> measuredBaseline = Resources.snapshot(databaseDirectory);
             stages.put("measurementBaseline", measuredBaseline);
+            if (workload instanceof EnduranceWorkload endurance) {
+                endurance.setMaintenanceObserver(active -> {
+                    try { sampler.phase(active ? "measurement-maintenance" : "measurement"); }
+                    catch (java.io.IOException error) { throw new java.sql.SQLException("Maintenance sampling failed", error); }
+                });
+                endurance.startMeasurement();
+            }
             sampler.phase("measurement");
             var steady = executePhase(workload, connections, workers, serialized, options, options.duration, options.seed,
                     "measurement", "latency", result, sampler);
@@ -209,6 +222,12 @@ final class ChildRunner {
             workload.validate(setup);
             result.put("workloadValidationNanos", System.nanoTime() - time);
             result.put("workloadValid", true);
+            if (workload instanceof EnduranceWorkload endurance) {
+                var details = endurance.metadata();
+                result.put("endurance", details);
+                if (((Number) details.get("maintenanceCompleted")).longValue() == 0)
+                    throw new IllegalStateException("No endurance maintenance cycle completed");
+            }
             long successes = ((Number) ((Map<?, ?>) result.get("measurement")).get("successes")).longValue();
             if (successes == 0) throw new IllegalStateException("No successful measured operations; run cannot be compared");
             result.put("valid", true);

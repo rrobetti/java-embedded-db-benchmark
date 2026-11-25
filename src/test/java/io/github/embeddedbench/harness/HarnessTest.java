@@ -445,6 +445,40 @@ class HarnessTest {
         }
     }
 
+    @Test void enduranceMaintainsBoundedCacheDuringMeasuredOperations() throws Exception {
+        BenchmarkOptions options = options();
+        options.output = directory(); options.rows = 20L; options.payload = 16;
+        options.engines = List.of("h2"); options.scenarios = List.of("endurance-cache");
+        options.threadSpec = "2"; options.readPercent = 95; options.warmup = 0.1;
+        options.duration = 0.8; options.maintenanceInterval = 0.1; options.runId = "endurance";
+        options.resolve();
+        Map<String, Object> result = ChildRunner.run(options);
+        assertEquals("OK", result.get("status"), String.valueOf(result.get("error")));
+        assertEquals(true, result.get("valid"));
+        Map<?, ?> endurance = (Map<?, ?>) result.get("endurance");
+        assertEquals(20L, endurance.get("cacheEntries"));
+        assertTrue(((Number) endurance.get("maintenanceCompleted")).longValue() > 0);
+        Map<?, ?> measurement = (Map<?, ?>) result.get("measurement");
+        Map<?, ?> latency = (Map<?, ?>) measurement.get("latency");
+        assertTrue(((Number) ((Map<?, ?>) latency.get("read")).get("count")).longValue() > 0);
+        assertTrue(((Number) ((Map<?, ?>) latency.get("maintenance")).get("count")).longValue() > 0);
+        assertEquals(0L, ((Number) measurement.get("failures")).longValue());
+        String samples = java.nio.file.Files.readString(options.output.resolve("resources.jsonl"));
+        assertTrue(samples.contains("\"phase\":\"measurement-maintenance\""));
+    }
+
+    @Test void enduranceWithoutMaintenanceIsNotSuccessful() throws Exception {
+        BenchmarkOptions options = options();
+        options.output = directory(); options.rows = 10L; options.payload = 16;
+        options.engines = List.of("h2"); options.scenarios = List.of("endurance-cache");
+        options.duration = 0.1; options.maintenanceInterval = 10; options.runId = "no-maintenance";
+        options.resolve();
+        Map<String, Object> result = ChildRunner.run(options);
+        assertEquals("FAILED", result.get("status"));
+        assertEquals(false, result.get("valid"));
+        assertTrue(String.valueOf(result.get("error")).contains("No endurance maintenance cycle completed"));
+    }
+
     @Test void compatibleHistogramsAreMergedNotPercentilesAveraged() throws Exception {
         Path directory = directory();
         var results = new ArrayList<Map<String, Object>>();

@@ -71,10 +71,30 @@ class HarnessTest {
         assertThrows(IllegalArgumentException.class, cli.options::resolve);
     }
 
+    @Test void researchProfileDefaultsAndLoadCommitOption() {
+        for (var entry : Map.of(
+                "smoke", List.of(100L, 0.0, 1.0, 1),
+                "quick", List.of(1_000L, 5.0, 10.0, 1),
+                "standard", List.of(100_000L, 30.0, 120.0, 3),
+                "full", List.of(100_000L, 30.0, 120.0, 5),
+                "stress", List.of(100_000L, 30.0, 60.0, 1),
+                "endurance", List.of(100_000L, 60.0, 3600.0, 1)).entrySet()) {
+            var cli = new BenchmarkCli();
+            new CommandLine(cli).parseArgs("--profile", entry.getKey(), "--load-commit-interval", "10000");
+            cli.options.resolve();
+            assertEquals(entry.getValue(), List.of(cli.options.rows, cli.options.warmup,
+                    cli.options.duration, cli.options.repetitions));
+            assertEquals(10_000L, cli.options.asMap().get("loadCommitInterval"));
+        }
+        var cli = new BenchmarkCli();
+        new CommandLine(cli).parseArgs("--load-commit-interval", "-1");
+        assertThrows(IllegalArgumentException.class, cli.options::resolve);
+    }
+
     @Test void defaultBudgetProvidesFullProfileAdmissionHeadroomAndPreservesOverrides() {
         var cli = new BenchmarkCli();
         var command = new CommandLine(cli);
-        command.parseArgs("--profile", "full");
+        command.parseArgs("--profile", "full", "--rows", "1000000");
         cli.options.resolve();
         long estimate = DeterministicDataset.logicalBytes(cli.options.rows, cli.options.payload) * 4
                 + BenchmarkOptions.memoryBytes(cli.options.jvmHeap)
@@ -82,7 +102,7 @@ class HarnessTest {
                 + 512L * 1024 * 1024;
         assertTrue(estimate < BenchmarkOptions.memoryBytes(cli.options.memoryBudget));
 
-        command.parseArgs("--profile", "full", "--memory-budget", "2g");
+        command.parseArgs("--profile", "full", "--rows", "1000000", "--memory-budget", "2g");
         cli.options.resolve();
         assertEquals(2L * 1024 * 1024 * 1024, cli.options.asMap().get("memoryBudgetBytes"));
         assertTrue(estimate > BenchmarkOptions.memoryBytes(cli.options.memoryBudget));

@@ -52,14 +52,14 @@ dependencies must already be cached. PowerShell setup uses `-Offline`.
 ## Profiles and controls
 
 The default `quick` uses 1,000 rows, 128-byte payloads, one worker/connection,
-one second warmup and two seconds measurement per selected combination.
+five seconds warmup and ten seconds measurement per selected combination.
 It is intentionally small; it is **not** a meaningful production ranking.
 All engines use the same default 768m child heap/4g budget for a fair resource
 ceiling. Explicit heap/budget options override these values; an undersized
 PGlite heap can fail during initialization. The script's supervisor heap
 defaults to 512m.
 
-The 4g budget provides admission headroom for the `full` dataset. The effective
+The effective
 limit is still capped at half the host RAM and 80% of a detected container
 memory limit; passing admission does not guarantee a run will fit in memory.
 In particular, HSQLDB can exhaust the Java heap with the `full` dataset, even
@@ -70,14 +70,21 @@ memory and supervisor, within the available host/container memory, or reduce
 
 | Profile | Rows | Warmup seconds | Measurement seconds | Fresh-JVM iterations |
 |---|---:|---:|---:|---:|
-| smoke | 100 | 0 | 0.2 | 1 |
-| quick | 1,000 | 1 | 2 | 1 |
-| standard | 100,000 | 30 | 120 | 5 |
-| full | 1,000,000 | 30 | 120 | 5 |
-| stress | 2,000,000 | 30 | 120 | 1 |
-| endurance | 100,000 | 30 | 1,800 | 1 |
+| smoke | 100 | 0 | 1 | 1 |
+| quick | 1,000 | 5 | 10 | 1 |
+| standard | 100,000 | 30 | 120 | 3 |
+| full | 100,000 | 30 | 120 | 5 |
+| stress | 100,000 | 30 | 60 | 1 |
+| endurance | 100,000 | 60 | 3,600 | 1 |
 
-All sizes/times can be overridden. Inspect the definitive CLI:
+Rows are per base table; the dataset contains seven times as many records.
+All sizes/times can be overridden. By default, `full` runs point, indexed-range,
+joins, mixed and HTAP workloads; other profiles run point and mixed. With four
+engines, one worker and default repetitions, `full` schedules 100 children
+(at least 4 hours 10 minutes of warmup and measurement, excluding loading
+and validation). The stress profile does not automatically increase sizes;
+specify `--rows` for each capacity experiment. These profiles are not the
+dedicated research scenarios. Inspect the definitive CLI:
 
 ```bash
 java -jar target/benchmark.jar --help
@@ -95,7 +102,7 @@ binary suffixes. `--iterations` means independent fresh-JVM repetitions and must
 `--repetitions` is an alias for `--iterations`; `--max-operations 0` means
 duration-only, while positive values bound attempts per phase.
 `--child-deadline` limits each individual child in seconds, including loading
-and validation, not the whole suite. The default full suite runs 40 children;
+and validation, not the whole suite.
 large PGlite loads can be slow, so use fewer rows and iterations for diagnosis.
 `--threads 1,4,8` runs a concurrency grid; omit `--connections` to match each
 worker count, or set a connection count no larger than the smallest grid value.
@@ -103,6 +110,14 @@ Connections cannot exceed workers. `auto` uses a bounded pool when fewer
 connections than workers are requested; `dedicated` requires equal counts.
 Do not assume every connection policy or
 workload is equally suitable for all engines.
+
+`--load-commit-interval 10000` commits after every 10,000 inserted records,
+independently of JDBC batch size and across table boundaries. The default `0`
+preserves the single-transaction loader. Incremental loading requires an
+auto-commit connection and can leave previously committed rows on failure;
+the failed child database must not be reused. A fresh child/database is used
+for every benchmark run. Incremental commits are not guaranteed to prevent
+engine memory exhaustion.
 
 ## Results and safety
 

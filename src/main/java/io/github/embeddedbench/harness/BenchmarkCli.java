@@ -256,6 +256,7 @@ public final class BenchmarkCli implements Callable<Integer> {
         add(command, "--connection-mode", options.connectionMode); add(command, "--rows", options.rows);
         add(command, "--payload", options.payload); add(command, "--threads", options.threads);
         add(command, "--connections", options.connections); add(command, "--batch", options.batch);
+        add(command, "--load-commit-interval", options.loadCommitInterval);
         add(command, "--transaction-size", options.transactionSize); add(command, "--request-rate", options.requestRate);
         add(command, "--queue-capacity", options.queueCapacity); add(command, "--warmup", options.warmup);
         add(command, "--duration", options.duration); add(command, "--max-operations", options.maxOperations);

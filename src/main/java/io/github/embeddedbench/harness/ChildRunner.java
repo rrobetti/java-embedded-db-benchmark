@@ -123,7 +123,8 @@ final class ChildRunner {
             timings.put("schema", System.nanoTime() - time);
             stages.put("schema", Resources.snapshot(databaseDirectory));
             time = System.nanoTime();
-            DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode);
+            DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode,
+                    options.loadCommitInterval);
             long loadNanos = System.nanoTime() - time;
             result.put("loadNanos", loadNanos);
             result.put("loadLogicalBytesPerSecond", loadNanos > 0
@@ -149,7 +150,8 @@ final class ChildRunner {
                     workload.close();
                     workload = null;
                     deleteDataset(setup);
-                    DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode);
+                    DeterministicDataset.load(setup, options.rows, options.payload, options.seed, options.batch, options.loadMode,
+                            options.loadCommitInterval);
                     DeterministicDataset.validate(setup, options.rows, options.payload, options.seed);
                     workload = Workloads.create(options.scenarios.getFirst(), options.rows, options.rangeRows,
                             options.readPercent, options.analyticalPercent, options.transactionSize, options.seed);

@@ -164,6 +164,46 @@ class DatabaseIntegrationTest {
         }
     }
 
+    @ParameterizedTest(name = "{0} incremental ingestion")
+    @ValueSource(strings = {"h2", "hsqldb", "sqlite", "pglite"})
+    void incrementalCommitsProduceTheSameDatasetOnEachEngine(String engine) throws Exception {
+        try (DatabaseAdapter adapter = DatabaseAdapters.create(engine, "default")) {
+            adapter.initialize();
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                DeterministicDataset.load(connection, 13, 16, 42, 5, "batch", 7);
+                DeterministicDataset.validate(connection, 13, 16, 42);
+                assertTrue(connection.getAutoCommit());
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"batch", "prepared", "individual"})
+    void incrementalCommitsFollowRecordBoundariesAcrossTables(String mode) throws Exception {
+        try (DatabaseAdapter adapter = new H2DatabaseAdapter()) {
+            adapter.initialize();
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                var commits = new java.util.concurrent.atomic.AtomicInteger();
+                Connection counting = (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                        new Class<?>[]{Connection.class}, (proxy, method, args) -> {
+                            if (method.getName().equals("commit")) commits.incrementAndGet();
+                            try { return method.invoke(connection, args); }
+                            catch (java.lang.reflect.InvocationTargetException e) { throw e.getCause(); }
+                        });
+                DeterministicDataset.load(counting, 13, 16, 42, 5, mode, 7);
+                assertEquals(14, commits.get()); // 91 records, plus the final transaction commit
+                DeterministicDataset.validate(connection, 13, 16, 42);
+                connection.setAutoCommit(false);
+                assertThrows(IllegalArgumentException.class,
+                        () -> DeterministicDataset.load(connection, 1, 16, 42, 5, mode, 7));
+                assertFalse(connection.getAutoCommit());
+                connection.rollback();
+            }
+        }
+    }
+
     @Test
     void streamingLoaderModesLogicalAccountingAndCorruptionDetection() throws Exception {
         assertEquals(0, DeterministicDataset.logicalBytes(0, 32));

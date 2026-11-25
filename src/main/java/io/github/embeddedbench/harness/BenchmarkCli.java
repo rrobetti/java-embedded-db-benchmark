@@ -121,6 +121,11 @@ public final class BenchmarkCli implements Callable<Integer> {
         Long peakTotalRss = null;
         boolean watchdogAvailable = false;
         long incompleteWatchdogSamples = 0;
+        Thread cleanupHook = new Thread(() -> {
+            try { terminate(process); }
+            catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+        }, "benchmark-child-shutdown");
+        boolean hookRegistered = false;
         double effectiveOperationTimeout = options.inactivityTimeout;
         double arrivalRate = options.fixedReadRate > 0 ? options.fixedReadRate
                 : options.requestRate > 0 ? options.requestRate : options.refreshReadRate;
@@ -131,6 +136,8 @@ public final class BenchmarkCli implements Callable<Integer> {
             effectiveOperationTimeout = Math.max(effectiveOperationTimeout, pacedAllowance);
         }
         try {
+            Runtime.getRuntime().addShutdownHook(cleanupHook);
+            hookRegistered = true;
             try (var sampler = new SupervisorSampler(directory.resolve("supervisor-resources.jsonl"), process, start)) {
                 long nextSample = 0;
                 long nextHeartbeat = 0;
@@ -168,6 +175,14 @@ public final class BenchmarkCli implements Callable<Integer> {
             }
             if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             throw failure;
+        } finally {
+            if (hookRegistered) {
+                try { Runtime.getRuntime().removeShutdownHook(cleanupHook); }
+                catch (IllegalStateException shuttingDown) {
+                    // The registered hook owns cleanup while the JVM shuts down.
+                }
+                catch (SecurityException error) { LOG.warn("Could not remove child shutdown hook", error); }
+            }
         }
         Map<String, Object> result = null;
         Path resultFile = directory.resolve("result.json");
@@ -207,8 +222,25 @@ public final class BenchmarkCli implements Callable<Integer> {
         result.put("effectiveMemoryBudgetBytes", budget);
         result.put("admissionEstimateBytes", totalEstimate);
         result.put("childCommand", command);
+        if (!Boolean.TRUE.equals(result.get("datasetValid")) && !process.isAlive()) {
+            try {
+                discardIncompleteDatabase(directory);
+                result.put("incompleteDatabaseDiscarded", true);
+            } catch (IOException | java.io.UncheckedIOException | SecurityException error) {
+                result.put("incompleteDatabaseDiscarded", false);
+                result.put("cleanupError", Measurements.describe(error));
+            }
+        }
         writeJson(resultFile, result);
         return result;
+    }
+
+    static void discardIncompleteDatabase(Path runDirectory) throws IOException {
+        Path database = runDirectory.resolve("database");
+        if (!Files.exists(database, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+        try (var paths = Files.walk(database)) {
+            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
+        }
     }
 
     static String childExitKind(Path directory) {

@@ -195,8 +195,10 @@ independently of JDBC batch size and across table boundaries. The default `0`
 preserves the single-transaction loader. Incremental loading requires an
 auto-commit connection and can leave previously committed rows on failure;
 the failed child database must not be reused. A fresh child/database is used
-for every benchmark run. Incremental commits are not guaranteed to prevent
-engine memory exhaustion.
+for every benchmark run. After an incomplete load, the supervisor removes
+that run's database directory after the child exits, retaining diagnostics;
+cleanup errors are reported separately. Incremental commits are not
+guaranteed to prevent engine memory exhaustion.
 
 To compare single-transaction loading with 10,000-record commits using
 separate fresh JVMs and identical seeded datasets:

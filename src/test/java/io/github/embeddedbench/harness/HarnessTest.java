@@ -298,6 +298,19 @@ class HarnessTest {
         assertEquals("OOM", BenchmarkCli.childExitKind(directory));
     }
 
+    @Test void incompleteDatabaseCleanupOnlyTouchesItsRunDirectory() throws Exception {
+        Path run = directory();
+        Path database = run.resolve("database");
+        Files.createDirectories(database.resolve("nested"));
+        Files.writeString(database.resolve("nested/partial"), "incomplete");
+        Path log = run.resolve("stderr.log");
+        Files.writeString(log, "failure details");
+        BenchmarkCli.discardIncompleteDatabase(run);
+        assertFalse(Files.exists(database));
+        assertEquals("failure details", Files.readString(log));
+        BenchmarkCli.discardIncompleteDatabase(run);
+    }
+
     @Test void samplerWritesPeriodicSamplesDuringAPhase() throws Exception {
         Path file = directory().resolve("samples.jsonl");
         try (var sampler = new ResourceSampler(file, 0.1)) {

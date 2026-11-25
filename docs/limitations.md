@@ -64,3 +64,7 @@ macOS launchers do not provide a portable hard RSS cap.
 Start small, keep host headroom, do not run stress/endurance alongside other
 users' workloads, and preserve limit-triggered runs as failures. None of
 these scripts elevates privileges or installs OS packages.
+The Java supervisor attempts child-tree termination on normal JVM shutdown and
+deadlines; no user-space shutdown hook can guarantee cleanup after SIGKILL,
+host failure, or descendants that escape process ancestry. Use a managed
+scope where stronger process lifetime isolation is required.

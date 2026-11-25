@@ -289,6 +289,7 @@ class DatabaseIntegrationTest {
                     SQLException exception = assertThrows(SQLException.class,
                             () -> DeterministicDataset.validate(connection, 123, 129, 42), sql);
                     assertTrue(exception.getMessage().contains("Dataset validation failed"));
+                    assertEquals("BENCH_CORRECTNESS", exception.getSQLState());
                     connection.rollback();
                     connection.setAutoCommit(true);
                     DeterministicDataset.validate(connection, 123, 129, 42);

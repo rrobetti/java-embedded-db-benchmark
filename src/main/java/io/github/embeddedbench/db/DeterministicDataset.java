@@ -426,7 +426,7 @@ public final class DeterministicDataset {
     }
 
     private static SQLException mismatch(String field, long id) {
-        return new SQLException("Dataset validation failed: " + field + " at id " + id);
+        return new SQLException("Dataset validation failed: " + field + " at id " + id, "BENCH_CORRECTNESS");
     }
 
     private static String customerName(long id) {

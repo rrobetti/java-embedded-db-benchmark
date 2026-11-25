@@ -6,7 +6,7 @@ names fail. The registry exposes:
 | Group | Names |
 |---|---|
 | Lookups/ranges | `point`, `zipf`, `hot`, `range`, `indexed-range` |
-| Relational/analytical | `joins`, `relational`, `cte`, `htap` |
+| Relational/analytical | `joins`, `relational`, `cte`, `aggregate`, `htap` |
 | Mixed/transactions | `mixed`, `transactions`, `rollback`, `update`, `batch-update`, `write`, `contended-write`, `contended-transactions`, `long-transactions`, `deadlocks` |
 | Ingestion/mutation | `insert`, `ingestion`, `upsert`, `delete` |
 | Relational cache lifecycle | `cache`, `cache-populate`, `cache-incremental`, `cache-refresh`, `cache-replace`, `cache-expire`, `cache-invalidate`, `cache-bulk-invalidate` |
@@ -25,6 +25,8 @@ registry also exposes range scans, joins/aggregation, updates, account
 transfers, ingestion and hybrid work where supported. Each workload owns
 its SQL and post-run checks. A prepared data load is not itself evidence
 that all workload statements use the same preparation policy.
+`aggregate` consumes and verifies the account count and exact balance sum in
+integer cents on every operation; it is a separate read-only workload.
 
 `--range-rows` controls scan breadth.
 The `indexed-range` predicate uses the customer primary key.

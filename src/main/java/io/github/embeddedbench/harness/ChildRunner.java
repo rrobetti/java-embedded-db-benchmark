@@ -150,7 +150,7 @@ final class ChildRunner {
                 sampler.phase("validation");
                 workload.validate(setup);
                 result.put("warmupValid", true);
-                if (!java.util.Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte", "rollback")
+                if (!java.util.Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte", "aggregate", "rollback")
                         .contains(options.scenarios.getFirst())) {
                     time = System.nanoTime();
                     workload.close();

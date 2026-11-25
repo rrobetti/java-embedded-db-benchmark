@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class Workloads {
     public static final Set<String> NAMES = Set.of("ingestion", "point", "zipf", "hot", "range",
-            "indexed-range", "joins", "relational", "cte", "mixed", "htap", "cache",
+            "indexed-range", "joins", "relational", "cte", "aggregate", "mixed", "htap", "cache",
             "transactions", "write", "insert", "update", "delete", "batch-update", "upsert",
             "rollback", "cache-populate", "cache-invalidate", "cache-bulk-invalidate",
             "cache-refresh", "cache-incremental", "cache-expire", "cache-replace",
@@ -89,6 +89,7 @@ public final class Workloads {
                 case "hot" -> point(c, r.nextLong(Math.max(1, rows / 100)) + 1);
                 case "range", "indexed-range" -> range(c, r, name.equals("indexed-range"));
                 case "joins", "relational", "cte" -> relational(c, r);
+                case "aggregate" -> aggregate(c);
                 case "htap" -> r.nextInt(100) < analyticalPercent ? analytical(c, r) : mixed(c, r);
                 case "mixed" -> mixed(c, r);
                 case "cache" -> r.nextInt(100) < readPercent ? point(c, r.nextLong(rows) + 1) : maintenance(c, r);
@@ -181,6 +182,17 @@ public final class Workloads {
                 default -> "SELECT id,name,price FROM products ORDER BY name,price,id";
             };
             consume(statement(c, sql));
+            return ANALYTICAL;
+        }
+
+        private Operation aggregate(Connection c) throws SQLException {
+            PreparedStatement s = statement(c,
+                    "SELECT COUNT(*),SUM(CAST(ROUND(balance*100,0) AS BIGINT)) FROM accounts");
+            try (ResultSet rs = s.executeQuery()) {
+                if (!rs.next() || rs.getLong(1) != originalCounts.get("accounts")
+                        || rs.getBigDecimal(2) == null || rs.getBigDecimal(2).compareTo(originalBalance) != 0
+                        || rs.next()) throw incorrect("Account aggregate mismatch");
+            }
             return ANALYTICAL;
         }
 
@@ -365,7 +377,7 @@ public final class Workloads {
         @Override
         public void validate(Connection c) throws SQLException {
             if (!prepared) throw incorrect("Missing baseline validation");
-            if (Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte").contains(name))
+            if (Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte", "aggregate").contains(name))
                 DeterministicDataset.validate(c, rows, payloadSize, seed);
             for (Map.Entry<String, Long> entry : originalCounts.entrySet()) {
                 long expected = entry.getValue();

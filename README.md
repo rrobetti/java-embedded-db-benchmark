@@ -148,6 +148,28 @@ are not proof of OOM, and RSS deltas are not exact database-only memory.
 The runner does not impose a kernel memory or CPU limit; external scopes are
 described in [limitations](docs/limitations.md).
 
+### Read scalability
+
+The read runner executes point lookups, indexed ranges, joins and verified
+account aggregations in independent fresh JVMs. Defaults are 100,000 base
+rows, 1–128 workers, three repetitions, 30 seconds warmup and 120 seconds
+measurement per run. That is 384 runs across all engines, at least 16 hours
+of warmup/measurement plus loading and validation. Start with a smaller grid:
+
+```bash
+bash scripts/scenarios/read-scalability.sh --engines h2,sqlite \
+  --rows 1000 --workers 1,2 --warmup 1 --duration 2 --repetitions 1 \
+  --output research-results/reads
+```
+
+PowerShell: `./scripts/scenarios/read-scalability.ps1` accepts the same
+arguments. `--dry-run`, `--resume` and `--rerun-failed` have the same
+meaning as in the capacity runner. Include worker count 1 to calculate
+per-repetition scalability ratios. Results include throughput, p95/p99,
+errors, process CPU and RSS, and the effective session topology. PGlite's
+logical workers serialize through a single physical session; they are not
+independent concurrent database sessions.
+
 On an otherwise idle 32 GiB, 12-logical-CPU Linux workstation, keep substantial
 headroom for the OS and other processes, for example use `--memory-budget 6g
 --jvm-heap 2g` and an externally configured CPU/memory scope. The benchmark

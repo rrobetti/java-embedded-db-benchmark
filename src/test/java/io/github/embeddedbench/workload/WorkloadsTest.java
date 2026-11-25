@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class WorkloadsTest {
     @ParameterizedTest
     @ValueSource(strings = {"point", "zipf", "hot", "range", "indexed-range", "joins",
-            "relational", "cte", "mixed", "htap", "cache", "transactions", "rollback", "write",
+            "relational", "cte", "aggregate", "mixed", "htap", "cache", "transactions", "rollback", "write",
             "insert", "update", "delete", "batch-update", "upsert", "cache-populate",
             "cache-invalidate", "cache-bulk-invalidate", "cache-refresh", "cache-incremental",
             "cache-expire", "cache-replace", "contended-write", "contended-transactions", "long-transactions", "deadlocks"})
@@ -37,6 +37,25 @@ class WorkloadsTest {
                     assertTrue(c.getAutoCommit(), "Transaction state leaked");
                 }
                 w.validate(c);
+            }
+        }
+    }
+
+    @Test
+    void aggregateRejectsIncorrectValues() throws Exception {
+        try (var db = DatabaseAdapters.create("h2", "default")) {
+            db.initialize();
+            try (Connection c = db.openConnection();
+                 Workload workload = Workloads.create("aggregate", 10, 10, 100, 0, 1, 42)) {
+                db.createSchema(c);
+                DeterministicDataset.load(c, 10, 16, 42, 4);
+                workload.prepare(c);
+                assertEquals("analytical", workload.execute(c, new SplittableRandom(1)).category());
+                try (Statement statement = c.createStatement()) {
+                    statement.executeUpdate("UPDATE accounts SET balance=balance+1 WHERE id=1");
+                }
+                assertEquals("BENCH_CORRECTNESS",
+                        assertThrows(SQLException.class, () -> workload.execute(c, new SplittableRandom(1))).getSQLState());
             }
         }
     }

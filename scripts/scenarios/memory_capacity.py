@@ -268,13 +268,13 @@ def execute(args):
                     break
                 attempt = previous.get("attempt", 0) + 1
                 directory = output / "runs" / engine / str(size) / f"r{repetition}-attempt{attempt}"
-                directory.mkdir(parents=True, exist_ok=False)
-                native = directory / "native"
-                native.mkdir()
                 entry = {"status": "RUNNING", "attempt": attempt,
                          "artifactDirectory": str(directory.relative_to(output))}
                 manifest["runs"][key] = entry
                 write_json(manifest_path, manifest)
+                directory.mkdir(parents=True, exist_ok=False)
+                native = directory / "native"
+                native.mkdir()
                 complete = sum(item.get("status") in ("OK", "FAILED") for item in manifest["runs"].values())
                 print(f"{engine} rows={size} repetition={repetition} completed={complete}/{count} "
                       f"remaining<={count - complete}", flush=True)

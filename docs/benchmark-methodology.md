@@ -34,6 +34,15 @@ not an invented count of individual SQL statements.
 `--max-operations` bounds attempts per phase in addition to elapsed time;
 zero means duration-only. Do not mix these concepts.
 Batch load size is separate from workload transaction size.
+`--load-commit-interval` counts inserted records across all tables and is
+independent of batch size. Zero preserves atomic single-transaction loading;
+positive intervals commit completed chunks and require an auto-commit
+connection. A failure can leave committed chunks, so do not reuse that
+database. The `scripts/scenarios/ingestion-comparison.sh` runner compares
+loading policies in separate fresh runs, with equivalent data and budgets;
+its PowerShell counterpart has the same options. Record all failures and
+sampled peak limitations. Incremental commits are not evidence that an
+engine's memory exhaustion has been resolved.
 
 ## Publication
 

@@ -6,8 +6,8 @@ names fail. The registry exposes:
 | Group | Names |
 |---|---|
 | Lookups/ranges | `point`, `zipf`, `hot`, `range`, `indexed-range` |
-| Relational/analytical | `joins`, `relational`, `cte`, `htap` |
-| Mixed/transactions | `mixed`, `transactions`, `rollback`, `update`, `batch-update`, `write`, `contended-write`, `contended-transactions`, `long-transactions`, `deadlocks` |
+| Relational/analytical | `joins`, `relational`, `cte`, `aggregate`, `htap` |
+| Mixed/transactions | `mixed`, `rw-independent`, `rw-hot`, `transactions`, `rollback`, `update`, `batch-update`, `write`, `contended-write`, `contended-transactions`, `long-transactions`, `deadlocks` |
 | Ingestion/mutation | `insert`, `ingestion`, `upsert`, `delete` |
 | Relational cache lifecycle | `cache`, `cache-populate`, `cache-incremental`, `cache-refresh`, `cache-replace`, `cache-expire`, `cache-invalidate`, `cache-bulk-invalidate` |
 
@@ -25,6 +25,8 @@ registry also exposes range scans, joins/aggregation, updates, account
 transfers, ingestion and hybrid work where supported. Each workload owns
 its SQL and post-run checks. A prepared data load is not itself evidence
 that all workload statements use the same preparation policy.
+`aggregate` consumes and verifies the account count and exact balance sum in
+integer cents on every operation; it is a separate read-only workload.
 
 `--range-rows` controls scan breadth.
 The `indexed-range` predicate uses the customer primary key.
@@ -45,6 +47,20 @@ Correctness baselines are captured before mutations, so an intended update
 is not incorrectly compared against an untouched seeded dataset.
 Monetary checks compare integer cents, avoiding accumulated SQLite
 floating-point representation noise.
+
+`rw-independent` reads odd-numbered accounts and atomically transfers
+between even-numbered accounts; it requires at least four base rows.
+`rw-hot` reads account 1 and transfers between accounts 1 and 2, requiring
+at least two rows. Both validate account counts and conserved total balances.
+`--fixed-read-rate` schedules independent, bounded-queue read and write
+arrival streams at a fixed read rate and a write rate derived from
+`--read-percent`. Per-stream offered and accepted counts are reported.
+The offered read stream remains fixed even when write demand increases;
+queue rejection and scheduled-arrival latency remain visible. For
+closed-loop comparisons, `--reader-workers` assigns a fixed number of worker
+threads to reads, with the remaining workers writing; achieved operation
+mix need not match the worker proportion. These controls apply only to the
+two `rw-*` workloads.
 
 `contended-write`/`contended-transactions` repeatedly target accounts 1 and 2
 instead of randomly spreading writes. `long-transactions` deliberately
@@ -71,6 +87,30 @@ insertion batches. `cache-expire` deletes by a deterministic 2024 timestamp
 cutoff. Cache readers point-lookup customers, so concurrent maintenance
 observes cross-table locking/resource impact rather than same-key TTL races.
 Publish this distinction with cache-oriented results.
+
+The separate harness scenario `cache-refresh-concurrent` instead seeds an
+additional `cache_entries` table and runs actual readers of that table while
+a writer operates. `record-update` and `record-invalidate` commit one entry at
+a time; `bulk-invalidate` and `expiration` delete the selected range in one
+transaction, with expiration using a deterministic synthetic expiry column.
+`incremental-refresh` commits configured-size chunks. `full-table-refresh`
+updates the selected range in one transaction; `replacement` deletes and
+reinserts that range atomically. Only the 100% setting covers the whole
+table. Every returned entry must be a permitted old or new value; deletion
+may expose absence, but replacement must not. The final cache and the
+original seeded dataset are validated. These are single-row observations,
+not proof of a multi-row snapshot.
+
+`endurance-cache` adds one numeric cache entry per base row. Workers use
+closed-loop point reads and updates; after warmup, a periodically selected
+worker updates the retained range and transactionally deletes and reinserts
+the first 10%, simulating bulk invalidation and expiration using a synthetic
+cutoff. An aggregate validates counts, IDs, generations and expiry fields
+inside each maintenance transaction. Final validation checks the bounded cache
+and the unchanged original seeded dataset. Maintenance has its own latency
+category and boundary samples, whose overhead is included in maintenance
+latency. It is not a TTL clock simulation or a proof of multi-row reader
+snapshot isolation.
 
 `upsert` chooses existing-row updates or unique new-row inserts with equal
 probability. It uses portable JDBC UPDATE followed by conditional INSERT

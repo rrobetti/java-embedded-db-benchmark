@@ -42,6 +42,28 @@ class DatabaseIntegrationTest {
         assertArrayEquals(new Throwable[]{rollback, restore}, actual.getSuppressed());
     }
 
+    @Test
+    void validatorPreservesOriginalFailureWhenCleanupAlsoFails() throws Exception {
+        SQLException original = new SQLException("validation failed");
+        SQLException rollback = new SQLException("rollback failed");
+        SQLException restore = new SQLException("restore failed");
+        Connection connection = (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class}, (proxy, method, arguments) -> switch (method.getName()) {
+                    case "getAutoCommit" -> true;
+                    case "setAutoCommit" -> {
+                        if ((boolean) arguments[0]) throw restore;
+                        yield null;
+                    }
+                    case "createStatement" -> throw original;
+                    case "rollback" -> throw rollback;
+                    default -> throw new AssertionError("Unexpected method: " + method.getName());
+                });
+        SQLException actual = assertThrows(SQLException.class,
+                () -> DeterministicDataset.validate(connection, 1, 1, 42));
+        assertSame(original, actual);
+        assertArrayEquals(new Throwable[]{rollback, restore}, actual.getSuppressed());
+    }
+
     @ParameterizedTest(name = "{0} / {1}")
     @CsvSource({"h2,default", "hsqldb,default", "hsqldb,mvcc", "hsqldb,locks", "sqlite,default", "pglite,default"})
     void realEngineRoundTripConstraintsTransactionsAndCapabilities(String id, String profile) throws Exception {
@@ -164,6 +186,68 @@ class DatabaseIntegrationTest {
         }
     }
 
+    @ParameterizedTest(name = "{0} incremental ingestion")
+    @ValueSource(strings = {"h2", "hsqldb", "sqlite", "pglite"})
+    void incrementalCommitsProduceTheSameDatasetOnEachEngine(String engine) throws Exception {
+        try (DatabaseAdapter adapter = DatabaseAdapters.create(engine, "default")) {
+            adapter.initialize();
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                DeterministicDataset.load(connection, 13, 16, 42, 5, "batch", 7);
+                DeterministicDataset.validate(connection, 13, 16, 42);
+                assertTrue(connection.getAutoCommit());
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"batch", "prepared", "individual"})
+    void incrementalCommitsFollowRecordBoundariesAcrossTables(String mode) throws Exception {
+        try (DatabaseAdapter adapter = new H2DatabaseAdapter()) {
+            adapter.initialize();
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                var commits = new java.util.concurrent.atomic.AtomicInteger();
+                Connection counting = (Connection) Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                        new Class<?>[]{Connection.class}, (proxy, method, args) -> {
+                            if (method.getName().equals("commit")) commits.incrementAndGet();
+                            try { return method.invoke(connection, args); }
+                            catch (java.lang.reflect.InvocationTargetException e) { throw e.getCause(); }
+                        });
+                var progress = new java.util.ArrayList<Long>();
+                DeterministicDataset.load(counting, 13, 16, 42, 5, mode, 7, progress::add);
+                assertEquals(91L, progress.getLast());
+                assertTrue(java.util.stream.IntStream.range(1, progress.size())
+                        .allMatch(i -> progress.get(i) > progress.get(i - 1)));
+                assertEquals(14, commits.get()); // 91 records, plus the final transaction commit
+                DeterministicDataset.validate(connection, 13, 16, 42);
+                connection.setAutoCommit(false);
+                assertThrows(IllegalArgumentException.class,
+                        () -> DeterministicDataset.load(connection, 1, 16, 42, 5, mode, 7));
+                assertFalse(connection.getAutoCommit());
+                connection.rollback();
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"h2", "hsqldb", "sqlite", "pglite"})
+    void reclamationDeletesAndRestoresExactRelationalSuffixes(String engine) throws Exception {
+        try (DatabaseAdapter adapter = DatabaseAdapters.create(engine, "default")) {
+            adapter.initialize();
+            try (Connection connection = adapter.openConnection()) {
+                adapter.createSchema(connection);
+                DeterministicDataset.load(connection, 7, 16, 42, 3, "batch", 5);
+                for (long first : new long[]{6, 4, 1}) {
+                    DatasetReclamation.deleteSuffix(connection, 7, first);
+                    DeterministicDataset.loadSuffix(connection, 7, first, 16, 42, 3, "batch", 5);
+                    DeterministicDataset.validate(connection, 7, 16, 42);
+                    assertTrue(connection.getAutoCommit());
+                }
+            }
+        }
+    }
+
     @Test
     void streamingLoaderModesLogicalAccountingAndCorruptionDetection() throws Exception {
         assertEquals(0, DeterministicDataset.logicalBytes(0, 32));
@@ -205,6 +289,7 @@ class DatabaseIntegrationTest {
                     SQLException exception = assertThrows(SQLException.class,
                             () -> DeterministicDataset.validate(connection, 123, 129, 42), sql);
                     assertTrue(exception.getMessage().contains("Dataset validation failed"));
+                    assertEquals("BENCH_CORRECTNESS", exception.getSQLState());
                     connection.rollback();
                     connection.setAutoCommit(true);
                     DeterministicDataset.validate(connection, 123, 129, 42);

@@ -49,17 +49,92 @@ bash scripts/benchmark.sh --offline --profile smoke \
 downloads when an absent jar must be built; the Maven distribution and all
 dependencies must already be cached. PowerShell setup uses `-Offline`.
 
+## Research suite
+
+The research scenarios address five questions: records per GiB of RAM,
+concurrent-reader scalability, read/write interference, reader disruption
+during cache refresh, and stability over prolonged operation. Build the jar
+first; Python 3 orchestrates sequential, fresh-JVM runs on one machine.
+
+```bash
+bash scripts/run-research.sh --level quick --dry-run
+bash scripts/run-research.sh --level quick --engines h2,hsqldb,sqlite,pglite \
+  --output research-results/quick
+```
+
+`--level quick` is a small implementation check. `standard` uses 100,000
+base rows, representative workload/concurrency selections, three repetitions
+and one hour per endurance run. `comprehensive` explicitly selects larger
+capacity and concurrency grids; it is never selected by default and can
+take a very long time. The printed run count is a maximum because capacity
+tests stop increasing sizes after failure. The time estimate assumes planned
+runs complete and excludes loading, validation and refresh execution.
+
+For an otherwise idle Linux workstation with approximately 32 GiB RAM and
+12 logical CPUs, preserve host headroom, inspect the plan, and start with:
+
+```bash
+bash scripts/run-research.sh --level standard --memory-budget 6g --jvm-heap 2g \
+  --cpu-cores 8 --exclude-endurance --dry-run
+bash scripts/run-research.sh --level standard --memory-budget 6g --jvm-heap 2g \
+  --cpu-cores 8 --exclude-endurance --output research-results/standard
+```
+
+On Linux, `--cpu-cores` restricts the supervisor and descendants to that
+many inherited available CPU IDs using process affinity; it is not a CPU
+quota and an inherited cgroup quota may be more restrictive. `--memory-budget`
+is a sampled watchdog, **not** a hard OS limit. On a Linux workstation with
+delegated cgroup v2 controllers and a user systemd instance, opt into a hard
+scope for the whole suite, for example:
+
+```bash
+bash scripts/run-research.sh --level standard --exclude-endurance \
+  --memory-budget 6g --jvm-heap 2g --systemd-memory-max 8g \
+  --systemd-cpu-quota 800 --output research-results/isolated
+```
+
+The scope starts without privilege elevation and is verified before running;
+if unavailable or unenforced, the runner fails without an unbounded
+fallback. The manifest distinguishes requested, locally enforced and
+observable effective limits; an unreadable ancestor limit is unavailable.
+Other platforms reject `--cpu-cores` when affinity enforcement is unavailable
+and do not support the systemd options. See [limitations](docs/limitations.md).
+
+Use `--scenarios`, `--engines`, `--sizes`, `--rows`, `--workers`,
+`--repetitions`, `--warmup`, `--duration`, and `--endurance-duration` to
+select and override the plan. `--exclude-expensive` omits load scalability,
+reclamation and the ingestion comparison; it does not cap capacity sizes.
+`--exclude-endurance` omits long-running stability tests. Repeat the same
+command with `--resume`, optionally adding `--rerun-failed`. Manifests
+check the plan, runner and jar hashes, Git state, machine and effective CPU
+affinity; use a new directory when these change. Individual scenario reports
+are written as runs finish, and the consolidated reports update after each
+scenario. Long-running child processes print elapsed time, phase, executed
+load records, child RSS/peak RSS and CPU load approximately every ten seconds.
+The runner uses `JAVA_HOME` when set, otherwise `java` on `PATH`; use JDK 25
+or later and rebuild the jar after changing the checkout. If a benchmark
+exits before producing a report, inspect the attempt's `supervisor.log`.
+After changing Java, the jar or the runner, start with a new output directory
+because existing manifests cannot be resumed with a different identity.
+The PowerShell entry point is `scripts/run-research.ps1`.
+
+`research.json`, `.csv`, `.md` and `.html` preserve scenario evidence and
+link to offline charts and raw artifacts. Missing, failed, unsupported and
+incorrect results are not successful comparisons. Short runs, unpaired
+configurations, missing metrics and a configured capacity upper bound do
+not justify rankings or absolute capacity claims.
+
 ## Profiles and controls
 
 The default `quick` uses 1,000 rows, 128-byte payloads, one worker/connection,
-one second warmup and two seconds measurement per selected combination.
+five seconds warmup and ten seconds measurement per selected combination.
 It is intentionally small; it is **not** a meaningful production ranking.
 All engines use the same default 768m child heap/4g budget for a fair resource
 ceiling. Explicit heap/budget options override these values; an undersized
 PGlite heap can fail during initialization. The script's supervisor heap
 defaults to 512m.
 
-The 4g budget provides admission headroom for the `full` dataset. The effective
+The effective
 limit is still capped at half the host RAM and 80% of a detected container
 memory limit; passing admission does not guarantee a run will fit in memory.
 In particular, HSQLDB can exhaust the Java heap with the `full` dataset, even
@@ -70,14 +145,21 @@ memory and supervisor, within the available host/container memory, or reduce
 
 | Profile | Rows | Warmup seconds | Measurement seconds | Fresh-JVM iterations |
 |---|---:|---:|---:|---:|
-| smoke | 100 | 0 | 0.2 | 1 |
-| quick | 1,000 | 1 | 2 | 1 |
-| standard | 100,000 | 30 | 120 | 5 |
-| full | 1,000,000 | 30 | 120 | 5 |
-| stress | 2,000,000 | 30 | 120 | 1 |
-| endurance | 100,000 | 30 | 1,800 | 1 |
+| smoke | 100 | 0 | 1 | 1 |
+| quick | 1,000 | 5 | 10 | 1 |
+| standard | 100,000 | 30 | 120 | 3 |
+| full | 100,000 | 30 | 120 | 5 |
+| stress | 100,000 | 30 | 60 | 1 |
+| endurance | 100,000 | 60 | 3,600 | 1 |
 
-All sizes/times can be overridden. Inspect the definitive CLI:
+Rows are per base table; the dataset contains seven times as many records.
+All sizes/times can be overridden. By default, `full` runs point, indexed-range,
+joins, mixed and HTAP workloads; other profiles run point and mixed. With four
+engines, one worker and default repetitions, `full` schedules 100 children
+(at least 4 hours 10 minutes of warmup and measurement, excluding loading
+and validation). The stress profile does not automatically increase sizes;
+specify `--rows` for each capacity experiment. These profiles are not the
+dedicated research scenarios. Inspect the definitive CLI:
 
 ```bash
 java -jar target/benchmark.jar --help
@@ -95,7 +177,16 @@ binary suffixes. `--iterations` means independent fresh-JVM repetitions and must
 `--repetitions` is an alias for `--iterations`; `--max-operations 0` means
 duration-only, while positive values bound attempts per phase.
 `--child-deadline` limits each individual child in seconds, including loading
-and validation, not the whole suite. The default full suite runs 40 children;
+and validation, not the whole suite.
+`--inactivity-timeout` optionally stops a child after the specified seconds
+without a sampler heartbeat or observable loading/operation progress; zero
+(the default) disables it. It applies to the Java CLI and research runners.
+The value must be at least twice the sampling interval and two seconds.
+Slow queries may legitimately have no completions; choose a conservative
+timeout. Validation and other phases without progress counters are protected
+by the child deadline and heartbeat, not a progress-based timeout. Paced
+workloads get a longer effective operation timeout to account for their
+scheduled arrival intervals; the effective value is reported.
 large PGlite loads can be slow, so use fewer rows and iterations for diagnosis.
 `--threads 1,4,8` runs a concurrency grid; omit `--connections` to match each
 worker count, or set a connection count no larger than the smallest grid value.
@@ -103,6 +194,219 @@ Connections cannot exceed workers. `auto` uses a bounded pool when fewer
 connections than workers are requested; `dedicated` requires equal counts.
 Do not assume every connection policy or
 workload is equally suitable for all engines.
+
+`--load-commit-interval 10000` commits after every 10,000 inserted records,
+independently of JDBC batch size and across table boundaries. The default `0`
+preserves the single-transaction loader. Incremental loading requires an
+auto-commit connection and can leave previously committed rows on failure;
+the failed child database must not be reused. A fresh child/database is used
+for every benchmark run. After an incomplete load, the supervisor removes
+that run's database directory after the child exits, retaining diagnostics;
+cleanup errors are reported separately. Incremental commits are not
+guaranteed to prevent engine memory exhaustion.
+
+To compare single-transaction loading with 10,000-record commits using
+separate fresh JVMs and identical seeded datasets:
+
+```bash
+bash scripts/scenarios/ingestion-comparison.sh --engines h2,hsqldb,sqlite,pglite \
+  --sizes 1000,10000 --repetitions 3 --memory-budget 2g \
+  --jvm-heap 768m --output research-results/ingestion
+```
+
+The PowerShell equivalent is `scripts/scenarios/ingestion-comparison.ps1`.
+Use `--dry-run`, or repeat the same command with `--resume` and optionally
+`--rerun-failed`. Both modes retain separate manifests, raw artifacts and
+capacity reports; the top-level comparison includes failures. To exercise
+incremental commits, choose a size with more than 10,000 total records or
+adjust `--incremental-interval`. Small smoke runs cannot establish whether
+incremental commits prevent large-dataset memory failures.
+
+### Progressive memory capacity
+
+The memory-capacity runner requires Python 3 and a built benchmark jar. It
+tests each engine sequentially with a fresh JVM for each size/repetition;
+on failure it stops increasing sizes for that engine and continues with the
+others. The default sequence is 1,000 through 5,000,000 base rows, with
+10,000-record load commits. This can take hours and exhaust the configured
+budget. Start with a dry run and small sizes:
+
+```bash
+bash scripts/scenarios/memory-capacity.sh --sizes 1000,10000 --dry-run
+bash scripts/scenarios/memory-capacity.sh --engines h2,hsqldb,sqlite,pglite \
+  --sizes 1000,10000 --warmup 1 --duration 2 --memory-budget 2g \
+  --jvm-heap 768m --output research-results/capacity
+```
+
+PowerShell: `./scripts/scenarios/memory-capacity.ps1` accepts the same
+arguments. Repeat the identical command with `--resume` to reuse completed
+runs, and add `--rerun-failed` to retry failures. The manifest checks the
+experiment options, runner and benchmark jar hashes, Git state, Java and
+machine; changed configurations must use a new directory. Reports and raw
+artifacts are written incrementally. `capacity.json`, `.csv`, `.md` and
+`.html` record observed successful/failed boundaries, load time and sampled
+RSS. The configured upper limit reached successfully is only a lower bound,
+not an absolute capacity. Sampled peaks can miss spikes, admission failures
+are not proof of OOM, and RSS deltas are not exact database-only memory.
+The runner does not impose a kernel memory or CPU limit; external scopes are
+described in [limitations](docs/limitations.md).
+
+### Read scalability
+
+The read runner executes point lookups, indexed ranges, joins and verified
+account aggregations in independent fresh JVMs. Defaults are 100,000 base
+rows, 1–128 workers, three repetitions, 30 seconds warmup and 120 seconds
+measurement per run. That is 384 runs across all engines, at least 16 hours
+of warmup/measurement plus loading and validation. Start with a smaller grid:
+
+```bash
+bash scripts/scenarios/read-scalability.sh --engines h2,sqlite \
+  --rows 1000 --workers 1,2 --warmup 1 --duration 2 --repetitions 1 \
+  --output research-results/reads
+```
+
+PowerShell: `./scripts/scenarios/read-scalability.ps1` accepts the same
+arguments. `--dry-run`, `--resume` and `--rerun-failed` have the same
+meaning as in the capacity runner. Include worker count 1 to calculate
+per-repetition scalability ratios. Results include throughput, p95/p99,
+errors, process CPU and RSS, and the effective session topology. PGlite's
+logical workers serialize through a single physical session; they are not
+independent concurrent database sessions.
+
+### Read/write interference
+
+The interference runner tests independently accessed and hot accounts across
+the documented read/write percentages and worker counts. It reports read
+and write throughput/latency separately, along with contention, conflicts,
+timeouts and errors. For a small fixed-read-rate experiment:
+
+```bash
+bash scripts/scenarios/read-write-interference.sh --engines h2,sqlite \
+  --rows 1000 --workers 2 --read-percentages 100,95,80 \
+  --fixed-read-rate 100 --warmup 1 --duration 5 \
+  --output research-results/interference
+```
+
+PowerShell: `./scripts/scenarios/read-write-interference.ps1` accepts the
+same arguments. With `--fixed-read-rate`, reads and writes have separately
+scheduled open-loop arrivals; the write-only case uses that number as its
+total write rate. Alternatively, `--worker-groups` assigns dedicated readers
+and writers in closed-loop mode by rounding the requested worker proportion;
+the achieved mix can differ. The two modes are mutually exclusive.
+Include a 100% read baseline to calculate p95 degradation. Default settings
+schedule 256 children across all engines, patterns, worker counts and mixes;
+use `--dry-run` before executing.
+
+### Cache refresh with concurrent readers
+
+The cache runner adds a separate table of one cache entry per base row, so
+these experiments contain **eight**, not seven, records per base row.
+Readers query that table continuously while a writer performs individual
+updates/invalidation, bulk invalidation, incremental updates, transactional
+range updates, atomic replacement or simulated expiration. At 100%, the
+transactional range update and replacement cover the full cache.
+
+```bash
+bash scripts/scenarios/cache-refresh.sh --engines h2,sqlite \
+  --strategies incremental-refresh,replacement --percentages 10,100 \
+  --rows 1000 --workers 2 --before 1 --after 1 --read-rate 50 \
+  --output research-results/refresh
+```
+
+PowerShell: `./scripts/scenarios/cache-refresh.ps1` accepts the same
+arguments. Defaults schedule 112 fresh-JVM runs across four engines, seven
+strategies and four percentages, with ten seconds of reads before and after
+each refresh. `--read-rate 0` is unpaced closed-loop; a positive value paces
+closed-loop readers and is not an open-loop arrival guarantee. PGlite
+serializes the writer and readers on one session. SQLite may report
+`SQLITE_LOCKED`; these errors are not retried. Readers validate each
+single-row result against the permitted old/new or invalidated state, while
+the final cache is fully validated. Replacement uses one transaction and
+must never expose a missing selected row. This does not establish a
+multi-row snapshot guarantee. Latency uses reads overlapping each phase;
+throughput uses successful completions sampled at phase boundaries, which can
+distort very short refresh intervals. A short refresh can have no overlapping
+reads; its during-refresh latency ratio is then unavailable, not zero. Exact
+lock-blocking duration is not measured. `--dry-run`, `--resume` and
+`--rerun-failed` are supported.
+
+### Open-loop load scalability
+
+`scripts/scenarios/load-scalability.sh` (or `.ps1`) offers point reads at
+progressively increasing rates using the bounded open-loop queue. Scheduled
+arrival-to-completion latency includes queueing and scheduler delay. The
+reports distinguish offered, accepted, completed, failed and rejected
+requests; the observed sustainable bound requires every repetition at that
+rate to meet the configured p99 and combined failure/rejection targets.
+It is a tested bound, not an absolute maximum. For example:
+
+```bash
+bash scripts/scenarios/load-scalability.sh --engines h2,sqlite \
+  --rates 10,100,500 --rows 1000 --workers 2 --warmup 1 --duration 5 \
+  --p99-ms 100 --max-error-rate 0.01 --output research-results/load
+```
+
+Default rates are 10, 100, 500, 1,000 and 5,000 requests/s, with 30 seconds
+warmup and 60 seconds measurement. `--queue-capacity` bounds queued arrivals;
+`--dry-run`, `--resume` and `--rerun-failed` are supported. Select rates
+appropriate to the machine rather than interpreting a short CI run as a
+production saturation result.
+
+### Memory reclamation
+
+The reclamation runner repeatedly deletes 25%, 50%, then 100% of base rows
+across the relational dataset, observes an idle period, restores the exact
+seeded data and validates it. Each percentage starts with the restored full
+dataset. Counts are rounded up to whole base rows; one additional order item
+is removed at a partial-deletion boundary to preserve foreign keys. No
+explicit GC, compaction or vacuum is performed.
+
+```bash
+bash scripts/scenarios/memory-reclamation.sh --engines h2,sqlite \
+  --rows 1000 --cycles 2 --idle-seconds 5 \
+  --output research-results/reclamation
+```
+
+PowerShell: `./scripts/scenarios/memory-reclamation.ps1` accepts the same
+arguments. Defaults are 100,000 rows, three cycles and 30 seconds idle after
+each deletion. `--dry-run`, `--resume` and `--rerun-failed` are supported.
+Reports compare process RSS and heap after load, deletion, idle and
+reinsertion. A fall in RSS is observed release; retained memory is not by
+itself evidence of a leak. Set a child deadline long enough for loading,
+all idle periods and validations.
+
+### Endurance
+
+The endurance runner uses a bounded extra cache table with closed-loop reads
+and writes (95% reads by default). At each maintenance interval, a worker
+refreshes retained entries and transactionally deletes and reinserts 10%
+using a deterministic synthetic expiration cutoff, then checks an aggregate.
+The original seeded dataset and cache invariants are validated. Readers must
+not observe missing entries. Maintenance is counted separately and resource
+samples mark its boundaries. The fixture has eight records per base row,
+including the extra cache entry; it is not a production cache implementation.
+
+```bash
+bash scripts/scenarios/endurance.sh --engines h2,hsqldb,sqlite,pglite \
+  --rows 100000 --workers 4 --duration 3600 --maintenance-interval 60 \
+  --memory-budget 6g --jvm-heap 2g --output research-results/endurance
+```
+
+The PowerShell equivalent is `scripts/scenarios/endurance.ps1`. Durations of
+1,800, 3,600, 14,400 and 28,800 seconds are supported; use `--dry-run`
+before a long run. `--resume` and `--rerun-failed` preserve prior attempts.
+Reports include offline time-series charts and raw samples. Maintenance and
+its boundary sampling add overhead, and occasional engine lock errors are
+reported rather than retried. A sampled RSS increase or retained memory is
+not by itself evidence of a leak; repeat long runs and inspect GC, maintenance
+boundaries and logical dataset size before drawing conclusions.
+
+On an otherwise idle 32 GiB, 12-logical-CPU Linux workstation, keep substantial
+headroom for the OS and other processes, for example use `--memory-budget 6g
+--jvm-heap 2g` and an externally configured CPU/memory scope. The benchmark
+also limits its effective watchdog budget to a fraction of detected host or
+container memory. Do not launch large experiments on a shared machine without
+coordination.
 
 ## Results and safety
 

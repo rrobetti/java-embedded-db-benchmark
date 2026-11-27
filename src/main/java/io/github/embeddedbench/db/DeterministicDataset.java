@@ -12,6 +12,7 @@ import java.sql.Timestamp;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.lang.reflect.Proxy;
+import java.util.function.LongConsumer;
 
 /**
  * Generates customers/accounts/products/orders/transactions at N rows each and
@@ -30,14 +31,43 @@ public final class DeterministicDataset {
 
     public static void load(Connection connection, long rows, int payloadSize, long seed, int batchSize, String mode)
             throws SQLException {
+        load(connection, rows, payloadSize, seed, batchSize, mode, 0);
+    }
+
+    public static void load(Connection connection, long rows, int payloadSize, long seed, int batchSize, String mode,
+                            long commitInterval) throws SQLException {
+        load(connection, rows, payloadSize, seed, batchSize, mode, commitInterval, count -> {});
+    }
+
+    public static void load(Connection connection, long rows, int payloadSize, long seed, int batchSize, String mode,
+                            long commitInterval, LongConsumer progress) throws SQLException {
+        loadSuffix(connection, rows, 1, payloadSize, seed, batchSize, mode, commitInterval, progress);
+    }
+
+    /**
+     * Restores a deleted suffix and the preceding order item that referenced
+     * its first product. The retained prefix must otherwise be unchanged.
+     */
+    public static void loadSuffix(Connection connection, long rows, long first, int payloadSize, long seed,
+                                  int batchSize, String mode, long commitInterval) throws SQLException {
+        loadSuffix(connection, rows, first, payloadSize, seed, batchSize, mode, commitInterval, count -> {});
+    }
+
+    private static void loadSuffix(Connection connection, long rows, long first, int payloadSize, long seed,
+                                   int batchSize, String mode, long commitInterval, LongConsumer progress) throws SQLException {
         checkArguments(rows, payloadSize);
+        if (first < 1 || first > Math.max(1, rows))
+            throw new IllegalArgumentException("Invalid suffix start");
         if (!"batch".equals(mode) && !"prepared".equals(mode) && !"individual".equals(mode)) {
             throw new IllegalArgumentException("Supported ingestion modes: batch, prepared, individual; got " + mode);
         }
-        if (batchSize <= 0) {
-            throw new IllegalArgumentException("batchSize must be positive");
+        if (batchSize <= 0 || commitInterval < 0) {
+            throw new IllegalArgumentException("batchSize must be positive and commitInterval nonnegative");
         }
         boolean ownedTransaction = connection.getAutoCommit();
+        if (!ownedTransaction && commitInterval > 0) {
+            throw new IllegalArgumentException("Incremental commits require an auto-commit connection");
+        }
         Savepoint savepoint = null;
         if (ownedTransaction) {
             connection.setAutoCommit(false);
@@ -47,30 +77,32 @@ public final class DeterministicDataset {
         Throwable failure = null;
         try {
             int effectiveBatchSize = "prepared".equals(mode) ? 0 : batchSize;
-            insert(connection, "INSERT INTO customers VALUES (?,?,?,?,?)", rows, effectiveBatchSize, mode, (statement, id) -> {
+            LoadCommits commits = new LoadCommits(connection, commitInterval, progress);
+            insert(connection, "INSERT INTO customers VALUES (?,?,?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setString(2, customerName(id));
                 statement.setString(3, email(id));
                 statement.setString(4, notes(id));
                 statement.setBytes(5, payload(id, payloadSize, seed));
             });
-            insert(connection, "INSERT INTO accounts VALUES (?,?,?)", rows, effectiveBatchSize, mode, (statement, id) -> {
+            insert(connection, "INSERT INTO accounts VALUES (?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setLong(2, id);
                 statement.setBigDecimal(3, balance(id, seed));
             });
-            insert(connection, "INSERT INTO products VALUES (?,?,?)", rows, effectiveBatchSize, mode, (statement, id) -> {
+            insert(connection, "INSERT INTO products VALUES (?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setString(2, productName(id));
                 statement.setBigDecimal(3, price(id, seed));
             });
-            insert(connection, "INSERT INTO orders VALUES (?,?,?,?)", rows, effectiveBatchSize, mode, (statement, id) -> {
+            insert(connection, "INSERT INTO orders VALUES (?,?,?,?)", first, rows, effectiveBatchSize, mode, commits, (statement, id) -> {
                 statement.setLong(1, id);
                 statement.setLong(2, id);
                 statement.setTimestamp(3, timestamp(id));
                 statement.setString(4, status(id));
             });
-            insert(connection, "INSERT INTO order_items VALUES (?,?,?,?)", Math.multiplyExact(rows, 2), effectiveBatchSize, mode,
+            insert(connection, "INSERT INTO order_items VALUES (?,?,?,?)", first == 1 ? 1 : Math.multiplyExact(first - 1, 2),
+                    Math.multiplyExact(rows, 2), effectiveBatchSize, mode, commits,
                     (statement, id) -> {
                         long orderId = (id + 1) / 2;
                         statement.setLong(1, id);
@@ -78,7 +110,7 @@ public final class DeterministicDataset {
                         statement.setLong(3, itemProduct(id, rows));
                         statement.setInt(4, quantity(id, seed));
                     });
-            insert(connection, "INSERT INTO financial_transactions VALUES (?,?,?,?)", rows, effectiveBatchSize, mode,
+            insert(connection, "INSERT INTO financial_transactions VALUES (?,?,?,?)", first, rows, effectiveBatchSize, mode, commits,
                     (statement, id) -> {
                         statement.setLong(1, id);
                         statement.setLong(2, id);
@@ -122,12 +154,25 @@ public final class DeterministicDataset {
         if (ownedTransaction) {
             connection.setAutoCommit(false);
         }
+        Throwable failure = null;
         try {
             validateRows(connection, rows, payloadSize, seed);
+        } catch (SQLException | RuntimeException | Error error) {
+            failure = error;
+            throw error;
         } finally {
             if (ownedTransaction) {
-                connection.rollback();
-                connection.setAutoCommit(true);
+                try { connection.rollback(); }
+                catch (SQLException | RuntimeException error) {
+                    if (failure == null) failure = error; else failure.addSuppressed(error);
+                }
+                try { connection.setAutoCommit(true); }
+                catch (SQLException | RuntimeException error) {
+                    if (failure == null) failure = error; else failure.addSuppressed(error);
+                }
+                if (failure instanceof SQLException error) throw error;
+                if (failure instanceof RuntimeException error) throw error;
+                if (failure instanceof Error error) throw error;
             }
         }
     }
@@ -215,34 +260,39 @@ public final class DeterministicDataset {
         }
     }
 
-    private static void insert(Connection connection, String sql, long rows, int batchSize, String mode, Binder binder)
+    private static void insert(Connection connection, String sql, long first, long last, int batchSize, String mode,
+                               LoadCommits commits, Binder binder)
             throws SQLException {
         if ("individual".equals(mode)) {
-            insertIndividual(connection, sql, rows, binder);
+            insertIndividual(connection, sql, first, last, commits, binder);
             return;
         }
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             int pending = 0;
-            for (long id = 1; id <= rows; id++) {
+            for (long id = first; id <= last; id++) {
                 binder.bind(statement, id);
                 if (batchSize == 0) {
                     statement.executeUpdate();
+                    commits.inserted(1);
                     continue;
                 }
                 statement.addBatch();
-                if (++pending == batchSize) {
+                if (++pending == batchSize || commits.reachesBoundary(pending)) {
                     statement.executeBatch();
                     statement.clearBatch();
+                    commits.inserted(pending);
                     pending = 0;
                 }
             }
             if (pending > 0) {
                 statement.executeBatch();
+                commits.inserted(pending);
             }
         }
     }
 
-    private static void insertIndividual(Connection connection, String template, long rows, Binder binder)
+    private static void insertIndividual(Connection connection, String template, long first, long last,
+                                         LoadCommits commits, Binder binder)
             throws SQLException {
         Object[] values = new Object[(int) template.chars().filter(character -> character == '?').count()];
         PreparedStatement parameters = (PreparedStatement) Proxy.newProxyInstance(
@@ -260,7 +310,7 @@ public final class DeterministicDataset {
         boolean postgres = "PostgreSQL".equalsIgnoreCase(product);
         String prefix = template.substring(0, template.indexOf('(') + 1);
         try (Statement statement = connection.createStatement()) {
-            for (long id = 1; id <= rows; id++) {
+            for (long id = first; id <= last; id++) {
                 binder.bind(parameters, id);
                 StringBuilder sql = new StringBuilder(prefix);
                 for (int index = 0; index < values.length; index++) {
@@ -270,6 +320,35 @@ public final class DeterministicDataset {
                     sql.append(literal(values[index], sqlite, postgres));
                 }
                 statement.executeUpdate(sql.append(')').toString());
+                commits.inserted(1);
+            }
+        }
+    }
+
+    private static final class LoadCommits {
+        private final Connection connection;
+        private final long interval;
+        private final LongConsumer progress;
+        private long sinceCommit, total;
+
+        private LoadCommits(Connection connection, long interval, LongConsumer progress) {
+            this.connection = connection;
+            this.interval = interval;
+            this.progress = java.util.Objects.requireNonNull(progress);
+        }
+
+        private boolean reachesBoundary(int pending) {
+            return interval > 0 && pending >= interval - sinceCommit;
+        }
+
+        private void inserted(int count) throws SQLException {
+            total = Math.addExact(total, count);
+            progress.accept(total);
+            if (interval == 0) return;
+            sinceCommit += count;
+            if (sinceCommit == interval) {
+                connection.commit();
+                sinceCommit = 0;
             }
         }
     }
@@ -347,7 +426,7 @@ public final class DeterministicDataset {
     }
 
     private static SQLException mismatch(String field, long id) {
-        return new SQLException("Dataset validation failed: " + field + " at id " + id);
+        return new SQLException("Dataset validation failed: " + field + " at id " + id, "BENCH_CORRECTNESS");
     }
 
     private static String customerName(long id) {

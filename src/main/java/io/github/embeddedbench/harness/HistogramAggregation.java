@@ -19,6 +19,7 @@ final class HistogramAggregation {
         var groups = new LinkedHashMap<String, Group>();
         for (Map<String, Object> result : results) {
             if (!Boolean.TRUE.equals(result.get("valid")) || !"OK".equals(result.get("status"))) continue;
+            if (!(result.get("measurement") instanceof Map<?, ?>)) continue;
             String key = result.get("engine") + "/" + result.get("scenario") + "/" + Json.encode(result.get("configuration"))
                     + "/" + result.get("effectiveConnectionMode");
             Group group = groups.computeIfAbsent(key, ignored -> new Group(result));

@@ -119,20 +119,71 @@ public final class BenchmarkCli implements Callable<Integer> {
                 .redirectError(directory.resolve("stderr.log").toFile()).start();
         String supervisorError = null;
         Long peakTotalRss = null;
-        boolean watchdogAvailable = Resources.procValue(process.pid(), "VmRSS:") != null;
-        while (process.isAlive()) {
-            Long rss = totalRss(process);
-            if (rss != null) {
-                peakTotalRss = peakTotalRss == null ? rss : Math.max(peakTotalRss, rss);
-                if (rss > budget) { supervisorError = "MEMORY_BUDGET"; break; }
-            }
-            if (System.nanoTime() - start > TimeUnit.SECONDS.toNanos(options.childDeadline)) {
-                supervisorError = "CHILD_DEADLINE"; break;
-            }
-            process.waitFor(50, TimeUnit.MILLISECONDS);
+        boolean watchdogAvailable = false;
+        long incompleteWatchdogSamples = 0;
+        Thread cleanupHook = new Thread(() -> {
+            try { terminate(process); }
+            catch (InterruptedException error) { Thread.currentThread().interrupt(); }
+        }, "benchmark-child-shutdown");
+        boolean hookRegistered = false;
+        double effectiveOperationTimeout = options.inactivityTimeout;
+        double arrivalRate = options.fixedReadRate > 0 ? options.fixedReadRate
+                : options.requestRate > 0 ? options.requestRate : options.refreshReadRate;
+        if (effectiveOperationTimeout > 0 && arrivalRate > 0) {
+            double longestPhase = Math.max(Math.max(options.duration, options.warmup),
+                    Math.max(options.refreshBefore, options.refreshAfter));
+            double pacedAllowance = Math.min(2 / arrivalRate, longestPhase) + 2 * options.sampleInterval;
+            effectiveOperationTimeout = Math.max(effectiveOperationTimeout, pacedAllowance);
         }
-        if (supervisorError != null) terminate(process);
-        process.waitFor(5, TimeUnit.SECONDS);
+        try {
+            Runtime.getRuntime().addShutdownHook(cleanupHook);
+            hookRegistered = true;
+            try (var sampler = new SupervisorSampler(directory.resolve("supervisor-resources.jsonl"), process, start)) {
+                long nextSample = 0;
+                long nextHeartbeat = 0;
+                var watchdog = new ProgressWatchdog(options.inactivityTimeout, effectiveOperationTimeout, start);
+                while (process.isAlive()) {
+                    Long rss = totalRss(process);
+                    if (rss != null) {
+                        watchdogAvailable = true;
+                        peakTotalRss = peakTotalRss == null ? rss : Math.max(peakTotalRss, rss);
+                        if (rss > budget) { supervisorError = "MEMORY_BUDGET"; break; }
+                    } else incompleteWatchdogSamples++;
+                    long now = System.nanoTime();
+                    if (now >= nextSample) {
+                        sampler.sample();
+                        nextSample = now + (long) (options.sampleInterval * 1_000_000_000L);
+                    }
+                    if (options.inactivityTimeout > 0 && now >= nextHeartbeat) {
+                        supervisorError = watchdog.check(directory.resolve("heartbeat.json"), now);
+                        if (supervisorError != null) break;
+                        nextHeartbeat = now + 500_000_000L;
+                    }
+                    if (now - start > TimeUnit.SECONDS.toNanos(options.childDeadline)) {
+                        supervisorError = "CHILD_DEADLINE"; break;
+                    }
+                    process.waitFor(50, TimeUnit.MILLISECONDS);
+                }
+                if (supervisorError != null) terminate(process);
+                process.waitFor(5, TimeUnit.SECONDS);
+            }
+        } catch (Exception | Error failure) {
+            try { terminate(process); }
+            catch (InterruptedException cleanup) {
+                failure.addSuppressed(cleanup);
+                Thread.currentThread().interrupt();
+            }
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+            throw failure;
+        } finally {
+            if (hookRegistered) {
+                try { Runtime.getRuntime().removeShutdownHook(cleanupHook); }
+                catch (IllegalStateException shuttingDown) {
+                    // The registered hook owns cleanup while the JVM shuts down.
+                }
+                catch (SecurityException error) { LOG.warn("Could not remove child shutdown hook", error); }
+            }
+        }
         Map<String, Object> result = null;
         Path resultFile = directory.resolve("result.json");
         if (Files.isRegularFile(resultFile)) {
@@ -155,6 +206,8 @@ public final class BenchmarkCli implements Callable<Integer> {
             result.put("childLogTail", tail.length() > 2_000 ? tail.substring(tail.length() - 2_000) : tail);
         }
         if (supervisorError != null || process.isAlive() || process.exitValue() != 0 && "OK".equals(result.get("status"))) {
+            if (result.containsKey("error")) result.put("childError", result.get("error"));
+            if (result.containsKey("errorClass")) result.put("childErrorClass", result.get("errorClass"));
             result.put("status", "FAILED"); result.put("valid", false);
             result.put("errorClass", supervisorError == null ? "CHILD_EXIT" : supervisorError);
             result.put("error", "Supervisor stopped or observed failed child; inspect child logs.");
@@ -162,12 +215,32 @@ public final class BenchmarkCli implements Callable<Integer> {
         result.put("childExitCode", process.isAlive() ? null : process.exitValue());
         result.put("supervisedWallSeconds", (System.nanoTime() - start) / 1_000_000_000.0);
         result.put("supervisorPeakTotalRssBytes", peakTotalRss);
+        result.put("supervisorResourceTimeSeries", "supervisor-resources.jsonl");
         result.put("rssWatchdogAvailable", watchdogAvailable);
+        result.put("rssWatchdogIncompleteSamples", incompleteWatchdogSamples);
+        result.put("effectiveOperationInactivityTimeoutSeconds", effectiveOperationTimeout);
         result.put("effectiveMemoryBudgetBytes", budget);
         result.put("admissionEstimateBytes", totalEstimate);
         result.put("childCommand", command);
+        if (!Boolean.TRUE.equals(result.get("datasetValid")) && !process.isAlive()) {
+            try {
+                discardIncompleteDatabase(directory);
+                result.put("incompleteDatabaseDiscarded", true);
+            } catch (IOException | java.io.UncheckedIOException | SecurityException error) {
+                result.put("incompleteDatabaseDiscarded", false);
+                result.put("cleanupError", Measurements.describe(error));
+            }
+        }
         writeJson(resultFile, result);
         return result;
+    }
+
+    static void discardIncompleteDatabase(Path runDirectory) throws IOException {
+        Path database = runDirectory.resolve("database");
+        if (!Files.exists(database, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return;
+        try (var paths = Files.walk(database)) {
+            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
+        }
     }
 
     static String childExitKind(Path directory) {
@@ -213,7 +286,8 @@ public final class BenchmarkCli implements Callable<Integer> {
         long total = parent + child;
         for (ProcessHandle descendant : process.descendants().toList()) {
             Long rss = Resources.procValue(descendant.pid(), "VmRSS:");
-            if (rss != null) total += rss;
+            if (rss == null) return null;
+            total += rss;
         }
         return total;
     }
@@ -256,7 +330,18 @@ public final class BenchmarkCli implements Callable<Integer> {
         add(command, "--connection-mode", options.connectionMode); add(command, "--rows", options.rows);
         add(command, "--payload", options.payload); add(command, "--threads", options.threads);
         add(command, "--connections", options.connections); add(command, "--batch", options.batch);
+        add(command, "--load-commit-interval", options.loadCommitInterval);
+        add(command, "--sample-interval", options.sampleInterval);
+        add(command, "--inactivity-timeout", options.inactivityTimeout);
+        add(command, "--reclamation-cycles", options.reclamationCycles);
+        add(command, "--idle-seconds", options.idleSeconds);
+        add(command, "--refresh-strategy", options.refreshStrategy); add(command, "--refresh-percent", options.refreshPercent);
+        add(command, "--refresh-before", options.refreshBefore); add(command, "--refresh-after", options.refreshAfter);
+        add(command, "--refresh-read-rate", options.refreshReadRate);
+        add(command, "--maintenance-interval", options.maintenanceInterval);
         add(command, "--transaction-size", options.transactionSize); add(command, "--request-rate", options.requestRate);
+        add(command, "--fixed-read-rate", options.fixedReadRate);
+        if (options.readerWorkers != null) add(command, "--reader-workers", options.readerWorkers);
         add(command, "--queue-capacity", options.queueCapacity); add(command, "--warmup", options.warmup);
         add(command, "--duration", options.duration); add(command, "--max-operations", options.maxOperations);
         add(command, "--iterations", 1);

@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public final class Workloads {
     public static final Set<String> NAMES = Set.of("ingestion", "point", "zipf", "hot", "range",
-            "indexed-range", "joins", "relational", "cte", "mixed", "htap", "cache",
+            "indexed-range", "joins", "relational", "cte", "aggregate", "mixed", "rw-independent", "rw-hot", "htap", "cache",
             "transactions", "write", "insert", "update", "delete", "batch-update", "upsert",
             "rollback", "cache-populate", "cache-invalidate", "cache-bulk-invalidate",
             "cache-refresh", "cache-incremental", "cache-expire", "cache-replace",
@@ -30,6 +30,8 @@ public final class Workloads {
         if (!NAMES.contains(name)) throw new IllegalArgumentException("Unknown workload: " + name);
         if (name.equals("deadlocks") && rows < 2)
             throw new IllegalArgumentException("Deadlock workloads require at least two accounts");
+        if (name.equals("rw-independent") && rows < 4 || name.equals("rw-hot") && rows < 2)
+            throw new IllegalArgumentException("Read/write workloads require at least four independent or two hot accounts");
         if (rows < 1 || rangeRows < 1 || transactionSize < 1 || readPercent < 0 || readPercent > 100
                 || analyticalPercent < 0 || analyticalPercent > 100)
             throw new IllegalArgumentException("Invalid workload parameters");
@@ -89,8 +91,11 @@ public final class Workloads {
                 case "hot" -> point(c, r.nextLong(Math.max(1, rows / 100)) + 1);
                 case "range", "indexed-range" -> range(c, r, name.equals("indexed-range"));
                 case "joins", "relational", "cte" -> relational(c, r);
+                case "aggregate" -> aggregate(c);
                 case "htap" -> r.nextInt(100) < analyticalPercent ? analytical(c, r) : mixed(c, r);
                 case "mixed" -> mixed(c, r);
+                case "rw-independent", "rw-hot" -> execute(c, r,
+                        r.nextInt(100) < readPercent ? OperationType.READ : OperationType.WRITE);
                 case "cache" -> r.nextInt(100) < readPercent ? point(c, r.nextLong(rows) + 1) : maintenance(c, r);
                 case "transactions", "contended-transactions", "long-transactions", "deadlocks" -> transfer(c, r, false, transactionSize);
                 case "contended-write" -> transfer(c, r, false, 1);
@@ -106,6 +111,30 @@ public final class Workloads {
                 case "write" -> write(c, r);
                 default -> throw new IllegalArgumentException(name);
             };
+        }
+
+        @Override
+        public Operation execute(Connection c, SplittableRandom r, OperationType type) throws SQLException {
+            if (!prepared) throw new IllegalStateException("Workload.prepare must run before workers");
+            if (!name.equals("rw-independent") && !name.equals("rw-hot"))
+                throw new UnsupportedOperationException("Explicit read/write selection is unavailable for " + name);
+            if (type == OperationType.READ) {
+                long id = name.equals("rw-hot") ? 1 : 2 * r.nextLong((rows + 1) / 2) + 1;
+                PreparedStatement s = statement(c, "SELECT id,balance FROM accounts WHERE id=?");
+                s.setLong(1, id);
+                try (ResultSet rs = s.executeQuery()) {
+                    if (!rs.next() || rs.getLong(1) != id || rs.getBigDecimal(2) == null || rs.next())
+                        throw incorrect("Account lookup mismatch");
+                }
+                return READ;
+            }
+            if (type != OperationType.WRITE) throw new IllegalArgumentException("Operation type is required");
+            if (name.equals("rw-hot")) return transferPair(c, 1, 2, false, false, 1);
+            long evenCount = rows / 2;
+            long firstIndex = r.nextLong(evenCount);
+            long first = 2 * (firstIndex + 1);
+            long second = 2 * ((firstIndex + 1) % evenCount + 1);
+            return transferPair(c, first, second, false, false, 1);
         }
 
         private Operation mixed(Connection c, SplittableRandom r) throws SQLException {
@@ -184,11 +213,27 @@ public final class Workloads {
             return ANALYTICAL;
         }
 
+        private Operation aggregate(Connection c) throws SQLException {
+            PreparedStatement s = statement(c,
+                    "SELECT COUNT(*),SUM(CAST(ROUND(balance*100,0) AS BIGINT)) FROM accounts");
+            try (ResultSet rs = s.executeQuery()) {
+                if (!rs.next() || rs.getLong(1) != originalCounts.get("accounts")
+                        || rs.getBigDecimal(2) == null || rs.getBigDecimal(2).compareTo(originalBalance) != 0
+                        || rs.next()) throw incorrect("Account aggregate mismatch");
+            }
+            return ANALYTICAL;
+        }
+
         private Operation transfer(Connection c, SplittableRandom r, boolean rollback, int size) throws SQLException {
             boolean deadlocks = name.equals("deadlocks");
             long first = deadlocks ? (r.nextBoolean() ? 1 : Math.min(2, rows))
                     : name.startsWith("contended-") ? 1 : r.nextLong(rows) + 1;
             long second = rows == 1 ? first : deadlocks ? 3 - first : (first % rows) + 1;
+            return transferPair(c, first, second, deadlocks, rollback, size);
+        }
+
+        private Operation transferPair(Connection c, long first, long second, boolean deadlocks,
+                                       boolean rollback, int size) throws SQLException {
             long low = deadlocks ? first : Math.min(first, second);
             long high = deadlocks ? second : Math.max(first, second);
             transaction(c, rollback, () -> {
@@ -365,7 +410,7 @@ public final class Workloads {
         @Override
         public void validate(Connection c) throws SQLException {
             if (!prepared) throw incorrect("Missing baseline validation");
-            if (Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte").contains(name))
+            if (Set.of("point", "zipf", "hot", "range", "indexed-range", "joins", "relational", "cte", "aggregate").contains(name))
                 DeterministicDataset.validate(c, rows, payloadSize, seed);
             for (Map.Entry<String, Long> entry : originalCounts.entrySet()) {
                 long expected = entry.getValue();

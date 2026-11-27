@@ -47,6 +47,50 @@ monitoring is not a successful hard cap.
 
 Resource snapshots are taken at baseline, initialization, schema, load,
 steady-state, explicit row deletion after validation, and shutdown.
+Additionally, each child writes `resources.jsonl` with phase-labelled JVM
+heap/non-heap, RSS/peak RSS, direct-buffer, CPU, GC, thread, free-memory and
+swap counters. Sampling defaults to one second and can be changed with
+`--sample-interval` (0.1 to 3600 seconds). Samples are also taken at phase
+boundaries. CPU load fractions are JVM/OS-provided recent estimates, not
+dedicated CPU quotas. Direct buffers are not all native allocations; WASM
+memory is explicitly unavailable rather than inferred from RSS. Short spikes
+can be missed. Warmup and measurement samples include interval counts,
+throughput and success-latency percentiles by operation category, as well as
+failed, timeout and rejected counts. Retries are zero because the harness
+does not retry operations. These are completion-window statistics: pending
+open-loop requests are not counted until completion or rejection. Interval
+histograms are snapshots of worker-local cumulative histograms and are not
+mixed across phases. `recordsLoaded` counts successfully executed insert
+statements/batches in the current base load, including uncommitted records;
+it is not a committed-row count. It resets after a warmup reload.
+Per-interval CPU core-equivalent comes from process CPU-time deltas;
+the accompanying percentage uses the JVM's reported available processor
+count, which is not necessarily the effective cgroup quota. Aggregate native
+memory and individual GC pauses are explicitly unavailable (`null`); the
+GC collection-time counter is not an individual-pause histogram.
+
+Each child run also has `supervisor-resources.jsonl`, sampled at the same
+configured interval by the supervisor. It separates supervisor and child RSS,
+peak RSS and CPU time, lists observed live descendants, and reports a child
+CPU core-equivalent over the preceding sample interval. The live-tree sums
+are null if any observed process metric is unavailable; short-lived
+descendants and transient memory spikes can be missed. Summed RSS can
+double-count shared pages. CPU time for exited descendants is not retained
+in the live-tree sum. Sampling provides neither complete native-memory
+attribution nor a kernel resource limit.
+The Python scenario orchestrator is the Java supervisor's parent and is not
+included in this Java process-tree series or its RSS watchdog; an optional
+systemd scope includes it in the kernel-enforced group limit.
+
+`heartbeat.json` is updated atomically by the child sampler. The optional
+inactivity watchdog distinguishes a missing heartbeat from no observed
+loading or operation progress, using `HEARTBEAT_TIMEOUT` and
+`INACTIVITY_TIMEOUT` respectively. The heartbeat deadline starts when the
+child is launched, including before its first sample. An executing but slow JDBC operation is
+indistinguishable from a stalled one until it completes. Validation and
+other uninstrumented phases use heartbeat liveness and the child deadline,
+not inferred row progress. The operation timeout is extended for sparse
+configured arrivals and is recorded in the result.
 Deletion is not compaction or proof that allocated pages were returned to
 the OS. CPU/GC/I/O deltas refer to measurement, not startup/load. Normalized
 throughput divides by reported logical processors or deterministic logical
